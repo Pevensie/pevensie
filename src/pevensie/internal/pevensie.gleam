@@ -9,31 +9,29 @@ pub type Pevensie(user_metadata, auth_status) {
 }
 
 pub fn init(
-  auth auth_config: AuthConfig(user_metadata, Disconnected),
-) -> Pevensie(user_metadata, Disconnected) {
+  auth auth_config: AuthConfig(user_metadata, auth_status),
+) -> Pevensie(user_metadata, auth_status) {
   Pevensie(auth_config)
 }
 
 pub fn connect_auth(
   pevensie: Pevensie(user_metadata, Disconnected),
 ) -> Result(Pevensie(user_metadata, Connected), Nil) {
-  connect_auth_driver(pevensie.auth_config.driver)
-  |> result.map(fn(auth_driver) {
-    Pevensie(AuthConfig(
-      user_metadata_decoder: pevensie.auth_config.user_metadata_decoder,
-      driver: auth_driver,
-    ))
+  let assert AuthConfig(driver, user_metadata_decoder) = pevensie.auth_config
+
+  connect_auth_driver(driver)
+  |> result.map(fn(driver) {
+    Pevensie(AuthConfig(user_metadata_decoder:, driver:))
   })
 }
 
 pub fn disconnect_auth(
   pevensie: Pevensie(user_metadata, Connected),
 ) -> Result(Pevensie(user_metadata, Disconnected), Nil) {
-  disconnect_auth_driver(pevensie.auth_config.driver)
-  |> result.map(fn(auth_driver) {
-    Pevensie(AuthConfig(
-      user_metadata_decoder: pevensie.auth_config.user_metadata_decoder,
-      driver: auth_driver,
-    ))
+  let assert AuthConfig(driver, user_metadata_decoder) = pevensie.auth_config
+
+  disconnect_auth_driver(driver)
+  |> result.map(fn(driver) {
+    Pevensie(AuthConfig(user_metadata_decoder:, driver:))
   })
 }

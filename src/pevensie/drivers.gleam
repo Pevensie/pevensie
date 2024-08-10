@@ -1,9 +1,6 @@
 import gleam/option.{type Option, None}
 import gleam/pgo
-import pevensie/internal/drivers.{
-  type AuthDriver, type Disabled, type Disconnected, NullAuthDriver,
-  PostgresAuthDriver,
-}
+import pevensie/internal/drivers.{type AuthDriver, PostgresAuthDriver}
 
 pub type IpVersion {
   Ipv4
@@ -46,9 +43,7 @@ pub fn default_postgres_config() -> PostgresConfig {
   )
 }
 
-pub fn new_postgres_auth_driver(
-  config: PostgresConfig,
-) -> AuthDriver(Disconnected) {
+pub fn new_postgres_auth_driver(config: PostgresConfig) -> AuthDriver {
   PostgresAuthDriver(config |> postgres_config_to_pgo_config, None)
 }
 
@@ -71,8 +66,4 @@ fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
       Ipv6 -> pgo.Ipv6
     },
   )
-}
-
-pub fn disabled() -> AuthDriver(Disabled) {
-  NullAuthDriver
 }
