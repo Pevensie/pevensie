@@ -1,14 +1,14 @@
 import birl
 import decode
 import gleam/dynamic.{
-  type DecodeErrors as DynamicDecodeErrors, type Decoder, type Dynamic,
+  type DecodeErrors as DynamicDecodeErrors, type Decoder,
   DecodeError as DynamicDecodeError,
 }
 import gleam/json
 import gleam/option.{None, Some}
 import gleam/pgo.{type Connection, type QueryError as PgoQueryError}
 import gleam/result
-import pevensie/internal/auth.{type User, User}
+import pevensie/internal/user.{type User, User}
 
 pub type GetUserError {
   NotFound
@@ -135,7 +135,8 @@ fn get_user(
   conn: Connection,
   by column: String,
   with value: String,
-) -> Result(User(option.Option(Dynamic)), GetUserError) {
+  using user_metadata_decoder: Decoder(user_metadata),
+) -> Result(User(user_metadata), GetUserError) {
   let sql = "
     select
       id::text,
@@ -161,7 +162,7 @@ fn get_user(
       sql,
       conn,
       [pgo.text(value)],
-      postgres_user_decoder(dynamic.optional(dynamic.dynamic)),
+      postgres_user_decoder(user_metadata_decoder),
     )
     |> result.map_error(QueryError)
 
@@ -176,6 +177,7 @@ fn get_user(
 pub fn get_user_by_id(
   conn: Connection,
   id: String,
-) -> Result(User(option.Option(Dynamic)), GetUserError) {
-  get_user(conn, "id", id)
+  user_metadata_decoder: Decoder(user_metadata),
+) -> Result(User(user_metadata), GetUserError) {
+  get_user(conn, by: "id", with: id, using: user_metadata_decoder)
 }
