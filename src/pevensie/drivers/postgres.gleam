@@ -4,12 +4,15 @@ import gleam/dynamic.{
   type DecodeErrors as DynamicDecodeErrors, type Decoder,
   DecodeError as DynamicDecodeError,
 }
+import gleam/io
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/pgo.{type QueryError as PgoQueryError}
 import gleam/result
-import pevensie/drivers.{type AuthDriver, AuthDriver}
-import pevensie/internal/user.{type User, User}
+import pevensie/drivers.{type AuthDriver, type Encoder, AuthDriver}
+import pevensie/internal/user.{
+  type User, type UserInsert, User, app_metadata_to_json,
+}
 
 pub type IpVersion {
   Ipv4
@@ -86,7 +89,16 @@ pub fn new_auth_driver(
     disconnect: disconnect,
     get_user: fn(driver, field, value, decoder) {
       get_user(driver, field, value, decoder)
-      |> result.map_error(fn(_) { Nil })
+      // TODO: Handle errors
+      |> result.map_error(fn(_err) { Nil })
+    },
+    insert_user: fn(driver, user, user_metadata_decoder, user_metadata_encoder) {
+      insert_user(driver, user, user_metadata_decoder, user_metadata_encoder)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
     },
   )
 }
@@ -268,6 +280,86 @@ fn get_user(
       [pgo.text(value)],
       postgres_user_decoder(user_metadata_decoder),
     )
+    |> result.map_error(QueryError)
+
+  use response <- result.try(query_result)
+  case response.rows {
+    [] -> Error(NotFound)
+    [user] -> Ok(user)
+    _ -> Error(InternalError("Unexpected number of rows returned"))
+  }
+}
+
+fn insert_user(
+  driver: Postgres,
+  user: UserInsert(user_metadata),
+  decoder user_metadata_decoder: Decoder(user_metadata),
+  encoder user_metadata_encoder: Encoder(user_metadata),
+) -> Result(User(user_metadata), GetUserError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  let sql =
+    "
+    insert into pevensie.\"user\" (
+      role,
+      email,
+      password_hash,
+      email_confirmed_at,
+      phone_number,
+      phone_number_confirmed_at,
+      app_metadata,
+      user_metadata
+    ) values (
+      $1,
+      $2,
+      $3,
+      $4::timestamptz,
+      $5,
+      $6::timestamptz,
+      $7::jsonb,
+      $8::jsonb
+    )
+    returning
+      id::text,
+      -- Convert timestamp fields to UNIX epoch microseconds
+      (extract(epoch from created_at) * 1000000)::bigint as created_at,
+      (extract(epoch from updated_at) * 1000000)::bigint as updated_at,
+      (extract(epoch from deleted_at) * 1000000)::bigint as deleted_at,
+      role,
+      email,
+      password_hash,
+      (extract(epoch from email_confirmed_at) * 1000000)::bigint as email_confirmed_at,
+      phone_number,
+      (extract(epoch from phone_number_confirmed_at) * 1000000)::bigint as phone_number_confirmed_at,
+      (extract(epoch from last_sign_in) * 1000000)::bigint as last_sign_in,
+      app_metadata,
+      user_metadata,
+      (extract(epoch from banned_until) * 1000000)::bigint as banned_until
+  "
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [
+        pgo.nullable(pgo.text, user.role),
+        pgo.text(user.email),
+        pgo.nullable(pgo.text, user.password_hash),
+        pgo.nullable(
+          pgo.timestamp,
+          user.email_confirmed_at |> option.map(birl.to_erlang_datetime),
+        ),
+        pgo.nullable(pgo.text, user.phone_number),
+        pgo.nullable(
+          pgo.timestamp,
+          user.phone_number_confirmed_at |> option.map(birl.to_erlang_datetime),
+        ),
+        pgo.text(app_metadata_to_json(user.app_metadata) |> json.to_string),
+        pgo.text(user_metadata_encoder(user.user_metadata) |> json.to_string),
+      ],
+      postgres_user_decoder(user_metadata_decoder),
+    )
+    // TODO: Handle errors
     |> result.map_error(QueryError)
 
   use response <- result.try(query_result)

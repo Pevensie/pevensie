@@ -22,13 +22,15 @@ pub fn with_auth(
 pub fn connect_auth(
   pevensie: Pevensie(user_metadata, auth_driver, Disconnected),
 ) -> Result(Pevensie(user_metadata, auth_driver, Connected), Nil) {
-  let assert AuthConfig(driver, user_metadata_decoder) = pevensie.auth_config
+  let assert AuthConfig(driver, user_metadata_decoder, user_metadata_encoder) =
+    pevensie.auth_config
 
   driver.connect(driver.driver)
   |> result.map(fn(internal_driver) {
     Pevensie(AuthConfig(
-      user_metadata_decoder:,
       driver: AuthDriver(..driver, driver: internal_driver),
+      user_metadata_decoder:,
+      user_metadata_encoder:,
     ))
   })
 }
@@ -36,13 +38,15 @@ pub fn connect_auth(
 pub fn disconnect_auth(
   pevensie: Pevensie(user_metadata, auth_driver, Connected),
 ) -> Result(Pevensie(user_metadata, auth_driver, Disconnected), Nil) {
-  let assert AuthConfig(driver, user_metadata_decoder) = pevensie.auth_config
+  let assert AuthConfig(driver, user_metadata_decoder, user_metadata_encoder) =
+    pevensie.auth_config
 
   driver.disconnect(driver.driver)
   |> result.map(fn(internal_driver) {
     Pevensie(AuthConfig(
-      user_metadata_decoder:,
       driver: AuthDriver(..driver, driver: internal_driver),
+      user_metadata_decoder:,
+      user_metadata_encoder:,
     ))
   })
 }
