@@ -5,10 +5,112 @@ import gleam/dynamic.{
   DecodeError as DynamicDecodeError,
 }
 import gleam/json
-import gleam/option.{None, Some}
-import gleam/pgo.{type Connection, type QueryError as PgoQueryError}
+import gleam/option.{type Option, None, Some}
+import gleam/pgo.{type QueryError as PgoQueryError}
 import gleam/result
+import pevensie/drivers.{type AuthDriver, AuthDriver}
 import pevensie/internal/user.{type User, User}
+
+pub type IpVersion {
+  Ipv4
+  Ipv6
+}
+
+pub type PostgresConfig {
+  PostgresConfig(
+    host: String,
+    port: Int,
+    database: String,
+    user: String,
+    password: Option(String),
+    ssl: Bool,
+    connection_parameters: List(#(String, String)),
+    pool_size: Int,
+    queue_target: Int,
+    queue_interval: Int,
+    idle_interval: Int,
+    trace: Bool,
+    ip_version: IpVersion,
+  )
+}
+
+pub opaque type Postgres {
+  Postgres(config: pgo.Config, conn: Option(pgo.Connection))
+}
+
+pub fn default_config() -> PostgresConfig {
+  PostgresConfig(
+    host: "127.0.0.1",
+    port: 5432,
+    database: "postgres",
+    user: "postgres",
+    password: None,
+    ssl: False,
+    connection_parameters: [],
+    pool_size: 1,
+    queue_target: 50,
+    queue_interval: 1000,
+    idle_interval: 1000,
+    trace: False,
+    ip_version: Ipv4,
+  )
+}
+
+fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
+  pgo.Config(
+    host: config.host,
+    port: config.port,
+    database: config.database,
+    user: config.user,
+    password: config.password,
+    ssl: config.ssl,
+    connection_parameters: config.connection_parameters,
+    pool_size: config.pool_size,
+    queue_target: config.queue_target,
+    queue_interval: config.queue_interval,
+    idle_interval: config.idle_interval,
+    trace: config.trace,
+    ip_version: case config.ip_version {
+      Ipv4 -> pgo.Ipv4
+      Ipv6 -> pgo.Ipv6
+    },
+  )
+}
+
+pub fn new_auth_driver(
+  config: PostgresConfig,
+) -> AuthDriver(Postgres, user_metadata) {
+  AuthDriver(
+    driver: Postgres(config |> postgres_config_to_pgo_config, None),
+    connect: connect,
+    disconnect: disconnect,
+    get_user: fn(driver, field, value, decoder) {
+      get_user(driver, field, value, decoder)
+      |> result.map_error(fn(_) { Nil })
+    },
+  )
+}
+
+fn connect(driver: Postgres) -> Result(Postgres, Nil) {
+  case driver {
+    Postgres(config, None) -> {
+      let conn = pgo.connect(config)
+
+      Ok(Postgres(config, Some(conn)))
+    }
+    Postgres(_, Some(_)) -> Error(Nil)
+  }
+}
+
+fn disconnect(driver: Postgres) -> Result(Postgres, Nil) {
+  case driver {
+    Postgres(config, Some(conn)) -> {
+      let _ = pgo.disconnect(conn)
+      Ok(Postgres(config, None))
+    }
+    Postgres(_, None) -> Error(Nil)
+  }
+}
 
 pub type GetUserError {
   NotFound
@@ -132,11 +234,13 @@ fn postgres_user_decoder(
 }
 
 fn get_user(
-  conn: Connection,
+  driver: Postgres,
   by column: String,
   with value: String,
   using user_metadata_decoder: Decoder(user_metadata),
 ) -> Result(User(user_metadata), GetUserError) {
+  let assert Postgres(_, Some(conn)) = driver
+
   let sql = "
     select
       id::text,
@@ -172,12 +276,4 @@ fn get_user(
     [user] -> Ok(user)
     _ -> Error(InternalError("Unexpected number of rows returned"))
   }
-}
-
-pub fn get_user_by_id(
-  conn: Connection,
-  id: String,
-  user_metadata_decoder: Decoder(user_metadata),
-) -> Result(User(user_metadata), GetUserError) {
-  get_user(conn, by: "id", with: id, using: user_metadata_decoder)
 }

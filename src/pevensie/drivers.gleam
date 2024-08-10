@@ -1,69 +1,33 @@
-import gleam/option.{type Option, None}
-import gleam/pgo
-import pevensie/internal/drivers.{type AuthDriver, PostgresAuthDriver}
+import gleam/dynamic.{type Decoder}
+import pevensie/internal/user.{type User}
 
-pub type IpVersion {
-  Ipv4
-  Ipv6
+pub opaque type Connected {
+  Connected
 }
 
-pub type PostgresConfig {
-  PostgresConfig(
-    host: String,
-    port: Int,
-    database: String,
-    user: String,
-    password: Option(String),
-    ssl: Bool,
-    connection_parameters: List(#(String, String)),
-    pool_size: Int,
-    queue_target: Int,
-    queue_interval: Int,
-    idle_interval: Int,
-    trace: Bool,
-    ip_version: IpVersion,
-  )
+pub opaque type Disconnected {
+  Disconnected
 }
 
-pub fn default_postgres_config() -> PostgresConfig {
-  PostgresConfig(
-    host: "127.0.0.1",
-    port: 5432,
-    database: "postgres",
-    user: "postgres",
-    password: None,
-    ssl: False,
-    connection_parameters: [],
-    pool_size: 1,
-    queue_target: 50,
-    queue_interval: 1000,
-    idle_interval: 1000,
-    trace: False,
-    ip_version: Ipv4,
-  )
+pub opaque type Disabled {
+  Disabled
 }
 
-pub fn new_postgres_auth_driver(config: PostgresConfig) -> AuthDriver {
-  PostgresAuthDriver(config |> postgres_config_to_pgo_config, None)
-}
+type ConnectFunction(auth_driver) =
+  fn(auth_driver) -> Result(auth_driver, Nil)
 
-fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
-  pgo.Config(
-    host: config.host,
-    port: config.port,
-    database: config.database,
-    user: config.user,
-    password: config.password,
-    ssl: config.ssl,
-    connection_parameters: config.connection_parameters,
-    pool_size: config.pool_size,
-    queue_target: config.queue_target,
-    queue_interval: config.queue_interval,
-    idle_interval: config.idle_interval,
-    trace: config.trace,
-    ip_version: case config.ip_version {
-      Ipv4 -> pgo.Ipv4
-      Ipv6 -> pgo.Ipv6
-    },
+type DisconnectFunction(auth_driver) =
+  fn(auth_driver) -> Result(auth_driver, Nil)
+
+type GetUserFunction(auth_driver, user_metadata) =
+  fn(auth_driver, String, String, Decoder(user_metadata)) ->
+    Result(User(user_metadata), Nil)
+
+pub type AuthDriver(driver, user_metadata) {
+  AuthDriver(
+    driver: driver,
+    connect: ConnectFunction(driver),
+    disconnect: DisconnectFunction(driver),
+    get_user: GetUserFunction(driver, user_metadata),
   )
 }
