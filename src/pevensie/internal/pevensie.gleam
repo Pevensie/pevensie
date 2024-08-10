@@ -1,14 +1,20 @@
 import gleam/result
 import pevensie/internal/auth.{type AuthConfig, AuthConfig}
 import pevensie/internal/drivers.{
-  type Connected, type Disconnected, connect_auth_driver, disconnect_auth_driver,
+  type Connected, type Disabled, type Disconnected, connect_auth_driver,
+  disconnect_auth_driver,
 }
 
 pub type Pevensie(user_metadata, auth_status) {
   Pevensie(auth_config: AuthConfig(user_metadata, auth_status))
 }
 
-pub fn init(
+pub fn new() -> Pevensie(user_metadata, Disabled) {
+  Pevensie(auth.AuthDisabled)
+}
+
+pub fn with_auth(
+  _pevensie: Pevensie(old_user_metadata, old_auth_status),
   auth auth_config: AuthConfig(user_metadata, auth_status),
 ) -> Pevensie(user_metadata, auth_status) {
   Pevensie(auth_config)
