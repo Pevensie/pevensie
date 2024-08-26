@@ -2,6 +2,7 @@ import argus
 import gleam/dict
 import gleam/dynamic.{type Decoder}
 import gleam/option.{None, Some}
+import gleam/result
 import pevensie/drivers.{
   type AuthDriver, type Connected, type Disabled, type Disconnected,
   type Encoder,
@@ -34,7 +35,13 @@ pub fn disabled() -> AuthConfig(Nil, user_metadata, Disabled) {
 }
 
 pub fn get_user_by_id(
-  pevensie: Pevensie(user_metadata, auth_driver, Connected),
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    cache_status,
+  ),
   id: String,
 ) -> Result(User(user_metadata), Nil) {
   let assert auth.AuthConfig(driver, user_metadata_decoder, ..) =
@@ -44,7 +51,13 @@ pub fn get_user_by_id(
 }
 
 pub fn get_user_by_email(
-  pevensie: Pevensie(user_metadata, auth_driver, Connected),
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    cache_status,
+  ),
   email: String,
 ) -> Result(User(user_metadata), Nil) {
   let assert auth.AuthConfig(driver, user_metadata_decoder, ..) =
@@ -58,8 +71,40 @@ fn hash_password(password: String) {
   |> argus.hash(password, argus.gen_salt())
 }
 
+pub fn verify_email_and_password(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    cache_status,
+  ),
+  email: String,
+  password: String,
+) -> Result(User(user_metadata), Nil) {
+  let assert auth.AuthConfig(driver, user_metadata_decoder, ..) =
+    pevensie.auth_config
+
+  use user <- result.try(driver.get_user(
+    driver.driver,
+    "email",
+    email,
+    user_metadata_decoder,
+  ))
+  case argus.verify(user.password_hash |> option.unwrap(""), password) {
+    Ok(True) -> Ok(user)
+    _ -> Error(Nil)
+  }
+}
+
 pub fn create_user_with_email(
-  pevensie: Pevensie(user_metadata, auth_driver, Connected),
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    cache_status,
+  ),
   email: String,
   password: String,
   user_metadata: user_metadata,

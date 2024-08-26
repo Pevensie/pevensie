@@ -68,3 +68,10 @@ create table if not exists pevensie."user" (
 );
 
 create unique index user_email_unique_idx on "user" (email, deleted_at) where (email is not null) nulls not distinct;
+
+create table if not exists pevensie."cache" (
+  resource_type text not null,
+  key text not null unique,
+  value text not null,
+  primary key (resource_type, key)
+);

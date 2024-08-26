@@ -2,17 +2,11 @@ import gleam/dynamic.{type Decoder}
 import gleam/json
 import pevensie/internal/user.{type User, type UserInsert}
 
-pub opaque type Connected {
-  Connected
-}
+pub type Connected
 
-pub opaque type Disconnected {
-  Disconnected
-}
+pub type Disconnected
 
-pub opaque type Disabled {
-  Disabled
-}
+pub type Disabled
 
 pub type Encoder(a) =
   fn(a) -> json.Json
@@ -43,5 +37,25 @@ pub type AuthDriver(driver, user_metadata) {
     disconnect: DisconnectFunction(driver),
     get_user: GetUserFunction(driver, user_metadata),
     insert_user: InsertUserFunction(driver, user_metadata),
+  )
+}
+
+type CacheStoreFunction(cache_driver) =
+  fn(cache_driver, String, String, String) -> Result(Nil, Nil)
+
+type CacheGetFunction(cache_driver) =
+  fn(cache_driver, String, String) -> Result(String, Nil)
+
+type CacheDeleteFunction(cache_driver) =
+  fn(cache_driver, String, String) -> Result(Nil, Nil)
+
+pub type CacheDriver(driver) {
+  CacheDriver(
+    driver: driver,
+    connect: ConnectFunction(driver),
+    disconnect: DisconnectFunction(driver),
+    store: CacheStoreFunction(driver),
+    get: CacheGetFunction(driver),
+    delete: CacheDeleteFunction(driver),
   )
 }

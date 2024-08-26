@@ -4,12 +4,15 @@ import gleam/dynamic.{
   type DecodeErrors as DynamicDecodeErrors, type Decoder,
   DecodeError as DynamicDecodeError,
 }
+import gleam/function
 import gleam/io
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/pgo.{type QueryError as PgoQueryError}
 import gleam/result
-import pevensie/drivers.{type AuthDriver, type Encoder, AuthDriver}
+import pevensie/drivers.{
+  type AuthDriver, type CacheDriver, type Encoder, AuthDriver, CacheDriver,
+}
 import pevensie/internal/user.{
   type User, type UserInsert, User, app_metadata_to_json,
 }
@@ -124,7 +127,7 @@ fn disconnect(driver: Postgres) -> Result(Postgres, Nil) {
   }
 }
 
-pub type GetUserError {
+pub type PostgresError {
   NotFound
   QueryError(PgoQueryError)
   DecodeError(DynamicDecodeErrors)
@@ -250,7 +253,7 @@ fn get_user(
   by column: String,
   with value: String,
   using user_metadata_decoder: Decoder(user_metadata),
-) -> Result(User(user_metadata), GetUserError) {
+) -> Result(User(user_metadata), PostgresError) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql = "
@@ -271,7 +274,7 @@ fn get_user(
       user_metadata,
       (extract(epoch from banned_until) * 1000000)::bigint as banned_until
     from pevensie.\"user\"
-    where " <> column <> " = $1"
+    where " <> column <> " = $1 and deleted_at is null"
 
   let query_result =
     pgo.execute(
@@ -295,7 +298,7 @@ fn insert_user(
   user: UserInsert(user_metadata),
   decoder user_metadata_decoder: Decoder(user_metadata),
   encoder user_metadata_encoder: Encoder(user_metadata),
-) -> Result(User(user_metadata), GetUserError) {
+) -> Result(User(user_metadata), PostgresError) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql =
@@ -367,5 +370,129 @@ fn insert_user(
     [] -> Error(NotFound)
     [user] -> Ok(user)
     _ -> Error(InternalError("Unexpected number of rows returned"))
+  }
+}
+
+pub fn new_cache_driver(config: PostgresConfig) -> CacheDriver(Postgres) {
+  CacheDriver(
+    driver: Postgres(config |> postgres_config_to_pgo_config, None),
+    connect: connect,
+    disconnect: disconnect,
+    store: fn(driver, resource_type, key, value) {
+      store(driver, resource_type, key, value)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+    get: fn(driver, resource_type, key) {
+      get(driver, resource_type, key)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+    delete: fn(driver, resource_type, key) {
+      delete(driver, resource_type, key)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+  )
+}
+
+fn store(
+  driver: Postgres,
+  resource_type: String,
+  key: String,
+  value: String,
+) -> Result(Nil, PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  let sql =
+    "
+    insert into pevensie.\"cache\" (
+      resource_type,
+      key,
+      value
+    ) values (
+      $1,
+      $2,
+      $3
+    )
+    on conflict (resource_type, key) do update set value = $3"
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [pgo.text(resource_type), pgo.text(key), pgo.text(value)],
+      fn(_) { Ok(json.null()) },
+    )
+    // TODO: Handle errors
+    |> result.map_error(QueryError)
+
+  case query_result {
+    Ok(_) -> Ok(Nil)
+    Error(err) -> Error(err)
+  }
+}
+
+fn get(
+  driver: Postgres,
+  resource_type: String,
+  key: String,
+) -> Result(String, PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  let sql =
+    "
+    select value::text
+    from pevensie.\"cache\"
+    where resource_type = $1 and key = $2"
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [pgo.text(resource_type), pgo.text(key)],
+      dynamic.decode1(function.identity, dynamic.element(0, dynamic.string)),
+    )
+    |> result.map_error(QueryError)
+
+  use response <- result.try(query_result)
+  case response.rows {
+    [] -> Error(NotFound)
+    [value] -> Ok(value)
+    _ -> Error(InternalError("Unexpected number of rows returned"))
+  }
+}
+
+fn delete(
+  driver: Postgres,
+  resource_type: String,
+  key: String,
+) -> Result(Nil, PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  let sql =
+    "
+    delete from pevensie.\"cache\"
+    where resource_type = $1 and key = $2"
+
+  let query_result =
+    pgo.execute(sql, conn, [pgo.text(resource_type), pgo.text(key)], fn(_) {
+      Ok(json.null())
+    })
+    // TODO: Handle errors
+    |> result.map_error(QueryError)
+
+  case query_result {
+    Ok(_) -> Ok(Nil)
+    Error(err) -> Error(err)
   }
 }
