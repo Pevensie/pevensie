@@ -4,7 +4,8 @@ import gleam/dynamic.{
   type DecodeErrors as DynamicDecodeErrors, type Decoder,
   DecodeError as DynamicDecodeError,
 }
-import gleam/function
+import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/json
 import gleam/option.{type Option, None, Some}
@@ -378,8 +379,8 @@ pub fn new_cache_driver(config: PostgresConfig) -> CacheDriver(Postgres) {
     driver: Postgres(config |> postgres_config_to_pgo_config, None),
     connect: connect,
     disconnect: disconnect,
-    store: fn(driver, resource_type, key, value) {
-      store(driver, resource_type, key, value)
+    store: fn(driver, resource_type, key, value, ttl_seconds) {
+      store(driver, resource_type, key, value, ttl_seconds)
       // TODO: Handle errors
       |> result.map_error(fn(err) {
         io.debug(err)
@@ -410,19 +411,26 @@ fn store(
   resource_type: String,
   key: String,
   value: String,
+  ttl_seconds: Option(Int),
 ) -> Result(Nil, PostgresError) {
   let assert Postgres(_, Some(conn)) = driver
 
-  let sql =
-    "
+  let expires_at_sql = case ttl_seconds {
+    None -> "null"
+    Some(ttl_seconds) ->
+      "now() + interval '" <> int.to_string(ttl_seconds) <> " seconds'"
+  }
+  let sql = "
     insert into pevensie.\"cache\" (
       resource_type,
       key,
-      value
+      value,
+      expires_at
     ) values (
       $1,
       $2,
-      $3
+      $3,
+      " <> expires_at_sql <> "
     )
     on conflict (resource_type, key) do update set value = $3"
 
@@ -446,12 +454,16 @@ fn get(
   driver: Postgres,
   resource_type: String,
   key: String,
-) -> Result(String, PostgresError) {
+) -> Result(Option(String), PostgresError) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql =
     "
-    select value::text
+    select
+      value::text, 
+      -- Returns true only if the exporation time is
+      -- set and has passed
+      (expires_at is not null and expires_at < now()) as expired
     from pevensie.\"cache\"
     where resource_type = $1 and key = $2"
 
@@ -460,14 +472,27 @@ fn get(
       sql,
       conn,
       [pgo.text(resource_type), pgo.text(key)],
-      dynamic.decode1(function.identity, dynamic.element(0, dynamic.string)),
+      dynamic.decode2(
+        fn(value, expired) { #(value, expired) },
+        dynamic.element(0, dynamic.string),
+        dynamic.element(1, dynamic.bool),
+      ),
     )
     |> result.map_error(QueryError)
 
   use response <- result.try(query_result)
   case response.rows {
-    [] -> Error(NotFound)
-    [value] -> Ok(value)
+    [] -> Ok(None)
+    // If no expiration is set, the value is valid forever
+    [#(value, False)] -> {
+      Ok(Some(value))
+    }
+    // If the value has expired, return None and delete the key
+    // in an async task
+    [#(_, True)] -> {
+      process.start(fn() { delete(driver, resource_type, key) }, False)
+      Ok(None)
+    }
     _ -> Error(InternalError("Unexpected number of rows returned"))
   }
 }

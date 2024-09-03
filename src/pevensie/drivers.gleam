@@ -1,5 +1,6 @@
 import gleam/dynamic.{type Decoder}
 import gleam/json
+import gleam/option.{type Option}
 import pevensie/internal/user.{type User, type UserInsert}
 
 pub type Connected
@@ -41,10 +42,10 @@ pub type AuthDriver(driver, user_metadata) {
 }
 
 type CacheStoreFunction(cache_driver) =
-  fn(cache_driver, String, String, String) -> Result(Nil, Nil)
+  fn(cache_driver, String, String, String, Option(Int)) -> Result(Nil, Nil)
 
 type CacheGetFunction(cache_driver) =
-  fn(cache_driver, String, String) -> Result(String, Nil)
+  fn(cache_driver, String, String) -> Result(Option(String), Nil)
 
 type CacheDeleteFunction(cache_driver) =
   fn(cache_driver, String, String) -> Result(Nil, Nil)

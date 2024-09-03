@@ -1,3 +1,4 @@
+import gleam/option.{type Option}
 import pevensie/drivers.{
   type CacheDriver, type Connected, type Disabled, type Disconnected,
 }
@@ -25,10 +26,11 @@ pub fn store(
   resource_type: String,
   key: String,
   value: String,
+  ttl_seconds: Option(Int),
 ) -> Result(Nil, Nil) {
   let assert cache.CacheConfig(driver) = pevensie.cache_config
 
-  driver.store(driver.driver, resource_type, key, value)
+  driver.store(driver.driver, resource_type, key, value, ttl_seconds)
 }
 
 pub fn get(
@@ -41,7 +43,7 @@ pub fn get(
   ),
   resource_type: String,
   key: String,
-) -> Result(String, Nil) {
+) -> Result(Option(String), Nil) {
   let assert cache.CacheConfig(driver) = pevensie.cache_config
 
   driver.get(driver.driver, resource_type, key)
