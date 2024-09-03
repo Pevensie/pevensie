@@ -1,7 +1,7 @@
 import argus
 import gleam/dict
 import gleam/dynamic.{type Decoder}
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import pevensie/drivers.{
   type AuthDriver, type Connected, type Disabled, type Disconnected,
@@ -10,7 +10,9 @@ import pevensie/drivers.{
 import pevensie/internal/auth
 import pevensie/internal/pevensie.{type Pevensie}
 import pevensie/internal/user.{
-  type User as InternalUser, type UserInsert as UserInsertInternal, UserInsert,
+  type User as InternalUser, type UserInsert as UserInsertInternal,
+  type UserUpdate as UserUpdateInternal, Set, UserInsert, UserUpdate,
+  default_user_update,
 }
 
 pub type User(user_metadata) =
@@ -18,6 +20,9 @@ pub type User(user_metadata) =
 
 pub type UserInsert(user_metadata) =
   UserInsertInternal(user_metadata)
+
+pub type UserUpdate(user_metadata) =
+  UserUpdateInternal(user_metadata)
 
 pub type AuthConfig(driver, user_metadata, connected) =
   auth.AuthConfig(driver, user_metadata, connected)
@@ -131,6 +136,33 @@ pub fn create_user_with_email(
       app_metadata: dict.new(),
       user_metadata: user_metadata,
     ),
+    user_metadata_decoder,
+    user_metadata_encoder,
+  )
+}
+
+pub fn set_user_role(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    cache_status,
+  ),
+  id: String,
+  role: Option(String),
+) -> Result(User(user_metadata), Nil) {
+  let assert auth.AuthConfig(
+    driver:,
+    user_metadata_decoder:,
+    user_metadata_encoder:,
+  ) = pevensie.auth_config
+
+  driver.update_user(
+    driver.driver,
+    "id",
+    id,
+    UserUpdate(..default_user_update(), role: Set(role)),
     user_metadata_decoder,
     user_metadata_encoder,
   )

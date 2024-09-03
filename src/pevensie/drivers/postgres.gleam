@@ -1,4 +1,4 @@
-import birl
+import birl.{type Time}
 import decode
 import gleam/dynamic.{
   type DecodeErrors as DynamicDecodeErrors, type Decoder,
@@ -8,14 +8,18 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/pair
 import gleam/pgo.{type QueryError as PgoQueryError}
 import gleam/result
+import gleam/string
 import pevensie/drivers.{
   type AuthDriver, type CacheDriver, type Encoder, AuthDriver, CacheDriver,
 }
 import pevensie/internal/user.{
-  type User, type UserInsert, User, app_metadata_to_json,
+  type UpdateField, type User, type UserInsert, type UserUpdate, Ignore, Set,
+  User, app_metadata_to_json,
 }
 
 pub type IpVersion {
@@ -104,6 +108,36 @@ pub fn new_auth_driver(
         Nil
       })
     },
+    update_user: fn(
+      driver,
+      field,
+      value,
+      user,
+      user_metadata_decoder,
+      user_metadata_encoder,
+    ) {
+      update_user(
+        driver,
+        field,
+        value,
+        user,
+        user_metadata_decoder,
+        user_metadata_encoder,
+      )
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+    delete_user: fn(driver, field, value, user_metadata_decoder) {
+      delete_user(driver, field, value, user_metadata_decoder)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
   )
 }
 
@@ -134,6 +168,24 @@ pub type PostgresError {
   DecodeError(DynamicDecodeErrors)
   InternalError(String)
 }
+
+const user_select_fields = "
+  id::text,
+  -- Convert timestamp fields to UNIX epoch microseconds
+  (extract(epoch from created_at) * 1000000)::bigint as created_at,
+  (extract(epoch from updated_at) * 1000000)::bigint as updated_at,
+  (extract(epoch from deleted_at) * 1000000)::bigint as deleted_at,
+  role,
+  email,
+  password_hash,
+  (extract(epoch from email_confirmed_at) * 1000000)::bigint as email_confirmed_at,
+  phone_number,
+  (extract(epoch from phone_number_confirmed_at) * 1000000)::bigint as phone_number_confirmed_at,
+  (extract(epoch from last_sign_in) * 1000000)::bigint as last_sign_in,
+  app_metadata,
+  user_metadata,
+  (extract(epoch from banned_until) * 1000000)::bigint as banned_until
+"
 
 fn postgres_user_decoder(
   user_metadata_decoder: Decoder(user_metadata),
@@ -259,21 +311,7 @@ fn get_user(
 
   let sql = "
     select
-      id::text,
-      -- Convert timestamp fields to UNIX epoch microseconds
-      (extract(epoch from created_at) * 1000000)::bigint as created_at,
-      (extract(epoch from updated_at) * 1000000)::bigint as updated_at,
-      (extract(epoch from deleted_at) * 1000000)::bigint as deleted_at,
-      role,
-      email,
-      password_hash,
-      (extract(epoch from email_confirmed_at) * 1000000)::bigint as email_confirmed_at,
-      phone_number,
-      (extract(epoch from phone_number_confirmed_at) * 1000000)::bigint as phone_number_confirmed_at,
-      (extract(epoch from last_sign_in) * 1000000)::bigint as last_sign_in,
-      app_metadata,
-      user_metadata,
-      (extract(epoch from banned_until) * 1000000)::bigint as banned_until
+      " <> user_select_fields <> "
     from pevensie.\"user\"
     where " <> column <> " = $1 and deleted_at is null"
 
@@ -302,8 +340,7 @@ fn insert_user(
 ) -> Result(User(user_metadata), PostgresError) {
   let assert Postgres(_, Some(conn)) = driver
 
-  let sql =
-    "
+  let sql = "
     insert into pevensie.\"user\" (
       role,
       email,
@@ -324,22 +361,7 @@ fn insert_user(
       $8::jsonb
     )
     returning
-      id::text,
-      -- Convert timestamp fields to UNIX epoch microseconds
-      (extract(epoch from created_at) * 1000000)::bigint as created_at,
-      (extract(epoch from updated_at) * 1000000)::bigint as updated_at,
-      (extract(epoch from deleted_at) * 1000000)::bigint as deleted_at,
-      role,
-      email,
-      password_hash,
-      (extract(epoch from email_confirmed_at) * 1000000)::bigint as email_confirmed_at,
-      phone_number,
-      (extract(epoch from phone_number_confirmed_at) * 1000000)::bigint as phone_number_confirmed_at,
-      (extract(epoch from last_sign_in) * 1000000)::bigint as last_sign_in,
-      app_metadata,
-      user_metadata,
-      (extract(epoch from banned_until) * 1000000)::bigint as banned_until
-  "
+      " <> user_select_fields
 
   let query_result =
     pgo.execute(
@@ -361,6 +383,161 @@ fn insert_user(
         pgo.text(app_metadata_to_json(user.app_metadata) |> json.to_string),
         pgo.text(user_metadata_encoder(user.user_metadata) |> json.to_string),
       ],
+      postgres_user_decoder(user_metadata_decoder),
+    )
+    // TODO: Handle errors
+    |> result.map_error(QueryError)
+
+  use response <- result.try(query_result)
+  case response.rows {
+    [] -> Error(NotFound)
+    [user] -> Ok(user)
+    _ -> Error(InternalError("Unexpected number of rows returned"))
+  }
+}
+
+fn update_field_to_sql(
+  field: UpdateField(a),
+  sql_type: fn(a) -> pgo.Value,
+) -> UpdateField(pgo.Value) {
+  case field {
+    Set(value) -> Set(sql_type(value))
+    Ignore -> Ignore
+  }
+}
+
+fn update_user(
+  driver: Postgres,
+  field: String,
+  value: String,
+  user: UserUpdate(user_metadata),
+  decoder user_metadata_decoder: Decoder(user_metadata),
+  encoder user_metadata_encoder: Encoder(user_metadata),
+) -> Result(User(user_metadata), PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  let optional_timestamp_to_pgo = fn(timestamp: Option(Time)) -> pgo.Value {
+    timestamp
+    |> option.map(birl.to_erlang_datetime)
+    |> pgo.nullable(pgo.timestamp, _)
+  }
+
+  let record_to_pgo = fn(record: a, encoder: Encoder(a)) -> pgo.Value {
+    pgo.text(encoder(record) |> json.to_string)
+  }
+
+  // Create a list of fields to update, filter by those that are set,
+  // then create SQL to update those fields.
+  let fields: List(#(String, UpdateField(pgo.Value))) = [
+    #("role", update_field_to_sql(user.role, pgo.nullable(pgo.text, _))),
+    #("email", update_field_to_sql(user.email, pgo.text)),
+    #(
+      "password_hash",
+      update_field_to_sql(user.password_hash, pgo.nullable(pgo.text, _)),
+    ),
+    #(
+      "email_confirmed_at",
+      update_field_to_sql(user.email_confirmed_at, optional_timestamp_to_pgo),
+    ),
+    #(
+      "phone_number",
+      update_field_to_sql(user.phone_number, pgo.nullable(pgo.text, _)),
+    ),
+    #(
+      "phone_number_confirmed_at",
+      update_field_to_sql(
+        user.phone_number_confirmed_at,
+        optional_timestamp_to_pgo,
+      ),
+    ),
+    #(
+      "last_sign_in",
+      update_field_to_sql(user.last_sign_in, optional_timestamp_to_pgo),
+    ),
+    #(
+      "app_metadata",
+      update_field_to_sql(user.app_metadata, record_to_pgo(
+        _,
+        app_metadata_to_json,
+      )),
+    ),
+    #(
+      "user_metadata",
+      update_field_to_sql(user.user_metadata, record_to_pgo(
+        _,
+        user_metadata_encoder,
+      )),
+    ),
+  ]
+
+  let fields_to_update =
+    fields
+    |> list.filter_map(fn(field) {
+      case field.1 {
+        Set(value) -> Ok(#(field.0, value))
+        Ignore -> Error(Nil)
+      }
+    })
+
+  let field_setters =
+    fields_to_update
+    |> list.index_map(fn(field, index) {
+      field.0 <> " = $" <> int.to_string(index + 1)
+    })
+    |> string.join(", ")
+
+  let update_values =
+    fields_to_update
+    |> list.map(pair.second)
+
+  let sql = "
+    update pevensie.\"user\"
+    set " <> field_setters <> "
+    where " <> field <> " = $" <> int.to_string(
+      list.length(fields_to_update) + 1,
+    ) <> " and deleted_at is null
+    returning " <> user_select_fields
+
+  sql
+  |> io.debug
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      list.append(update_values, [pgo.text(value)]),
+      postgres_user_decoder(user_metadata_decoder),
+    )
+    // TODO: Handle errors
+    |> result.map_error(QueryError)
+
+  use response <- result.try(query_result)
+  case response.rows {
+    [] -> Error(NotFound)
+    [user] -> Ok(user)
+    _ -> Error(InternalError("Unexpected number of rows returned"))
+  }
+}
+
+fn delete_user(
+  driver: Postgres,
+  field: String,
+  value: String,
+  decoder user_metadata_decoder: Decoder(user_metadata),
+) -> Result(User(user_metadata), PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  let sql = "
+    update pevensie.\"user\"
+    set deleted_at = now()
+    where " <> field <> " = $1 and deleted_at is null
+    returning " <> user_select_fields
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [pgo.text(value)],
       postgres_user_decoder(user_metadata_decoder),
     )
     // TODO: Handle errors
