@@ -1,6 +1,6 @@
 import gleam/dynamic.{type Decoder}
-import gleam/json
 import gleam/option.{type Option}
+import pevensie/internal/encoder.{type Encoder}
 import pevensie/internal/user.{type User, type UserInsert, type UserUpdate}
 
 pub type Connected
@@ -8,9 +8,6 @@ pub type Connected
 pub type Disconnected
 
 pub type Disabled
-
-pub type Encoder(a) =
-  fn(a) -> json.Json
 
 /// A function that connects the auth driver. This may
 /// set up any connections or perform any other setup

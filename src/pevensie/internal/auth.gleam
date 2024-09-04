@@ -1,5 +1,6 @@
 import gleam/dynamic.{type Decoder}
-import pevensie/drivers.{type AuthDriver, type Encoder}
+import pevensie/drivers.{type AuthDriver}
+import pevensie/internal/encoder.{type Encoder}
 
 pub type AuthConfig(driver, user_metadata, connected) {
   AuthConfig(

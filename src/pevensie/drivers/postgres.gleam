@@ -15,8 +15,9 @@ import gleam/pgo.{type QueryError as PgoQueryError}
 import gleam/result
 import gleam/string
 import pevensie/drivers.{
-  type AuthDriver, type CacheDriver, type Encoder, AuthDriver, CacheDriver,
+  type AuthDriver, type CacheDriver, AuthDriver, CacheDriver,
 }
+import pevensie/internal/encoder.{type Encoder}
 import pevensie/internal/user.{
   type UpdateField, type User, type UserInsert, type UserUpdate, Ignore, Set,
   User, app_metadata_to_json,
@@ -266,20 +267,20 @@ fn postgres_user_decoder(
       }
 
       Ok(User(
-        id,
-        created_at,
-        updated_at,
-        deleted_at,
-        role,
-        email,
-        password_hash,
-        email_confirmed_at,
-        phone_number,
-        phone_number_confirmed_at,
-        last_sign_in,
-        app_metadata,
-        user_metadata,
-        banned_until,
+        id:,
+        created_at:,
+        updated_at:,
+        deleted_at:,
+        role:,
+        email:,
+        password_hash:,
+        email_confirmed_at:,
+        phone_number:,
+        phone_number_confirmed_at:,
+        last_sign_in:,
+        app_metadata:,
+        user_metadata:,
+        banned_until:,
       ))
     })
     |> decode.field(0, decode.string)

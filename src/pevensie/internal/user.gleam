@@ -3,6 +3,7 @@ import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/json
 import gleam/option.{type Option}
+import pevensie/internal/encoder.{type Encoder}
 
 pub type User(user_metadata) {
   User(
@@ -14,7 +15,7 @@ pub type User(user_metadata) {
     email: String,
     password_hash: Option(String),
     email_confirmed_at: Option(Time),
-    phome_number: Option(String),
+    phone_number: Option(String),
     phone_number_confirmed_at: Option(Time),
     last_sign_in: Option(Time),
     app_metadata: Dict(String, Dynamic),
@@ -73,4 +74,53 @@ pub fn default_user_update() -> UserUpdate(user_metadata) {
 pub fn app_metadata_to_json(_app_metadata: Dict(String, Dynamic)) -> json.Json {
   // TODO: Properly type app_metadata
   json.object([])
+}
+
+pub fn user_encoder(
+  user: User(user_metadata),
+  user_metadata_encoder: Encoder(user_metadata),
+) -> json.Json {
+  json.object([
+    #("id", json.string(user.id)),
+    #("created_at", json.string(birl.to_iso8601(user.created_at))),
+    #("updated_at", json.string(birl.to_iso8601(user.updated_at))),
+    #(
+      "deleted_at",
+      json.nullable(user.deleted_at |> option.map(birl.to_iso8601), json.string),
+    ),
+    #("role", json.nullable(user.role, json.string)),
+    #("email", json.string(user.email)),
+    #("password_hash", json.nullable(user.password_hash, json.string)),
+    #(
+      "email_confirmed_at",
+      json.nullable(
+        user.email_confirmed_at |> option.map(birl.to_iso8601),
+        json.string,
+      ),
+    ),
+    #("phone_number", json.nullable(user.phone_number, json.string)),
+    #(
+      "phone_number_confirmed_at",
+      json.nullable(
+        user.phone_number_confirmed_at |> option.map(birl.to_iso8601),
+        json.string,
+      ),
+    ),
+    #(
+      "last_sign_in",
+      json.nullable(
+        user.last_sign_in |> option.map(birl.to_iso8601),
+        json.string,
+      ),
+    ),
+    #("app_metadata", app_metadata_to_json(user.app_metadata)),
+    #("user_metadata", user_metadata_encoder(user.user_metadata)),
+    #(
+      "banned_until",
+      json.nullable(
+        user.banned_until |> option.map(birl.to_iso8601),
+        json.string,
+      ),
+    ),
+  ])
 }

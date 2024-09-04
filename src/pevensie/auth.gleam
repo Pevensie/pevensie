@@ -1,19 +1,24 @@
 import argus
+import birl.{type Time}
+import birl/duration
 import gleam/dict
 import gleam/dynamic.{type Decoder}
+import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import pevensie/cache
 import pevensie/drivers.{
   type AuthDriver, type Connected, type Disabled, type Disconnected,
-  type Encoder,
 }
 import pevensie/internal/auth
+import pevensie/internal/encoder.{type Encoder}
 import pevensie/internal/pevensie.{type Pevensie}
 import pevensie/internal/user.{
   type User as InternalUser, type UserInsert as UserInsertInternal,
   type UserUpdate as UserUpdateInternal, Set, UserInsert, UserUpdate,
   default_user_update,
 }
+import youid/uuid
 
 pub type User(user_metadata) =
   InternalUser(user_metadata)
@@ -76,7 +81,7 @@ fn hash_password(password: String) {
   |> argus.hash(password, argus.gen_salt())
 }
 
-pub fn verify_email_and_password(
+pub fn get_user_by_email_and_password(
   pevensie: Pevensie(
     user_metadata,
     auth_driver,
@@ -166,4 +171,133 @@ pub fn set_user_role(
     user_metadata_decoder,
     user_metadata_encoder,
   )
+}
+
+pub type Session {
+  Session(id: String, user_id: String, created_at: Time, expires_at: Time)
+}
+
+fn encode_session(session: Session) -> json.Json {
+  json.object([
+    #("id", json.string(session.id)),
+    #("user_id", json.string(session.user_id)),
+    #("created_at", json.string(birl.to_iso8601(session.created_at))),
+    #("expires_at", json.string(birl.to_iso8601(session.expires_at))),
+  ])
+}
+
+fn session_decoder() -> Decoder(Session) {
+  let time_decoder = fn(time) {
+    use time <- result.try(dynamic.string(time))
+    birl.parse(time)
+    |> result.replace_error([])
+  }
+
+  dynamic.decode4(
+    Session,
+    dynamic.field("id", dynamic.string),
+    dynamic.field("user_id", dynamic.string),
+    dynamic.field("created_at", time_decoder),
+    dynamic.field("expires_at", time_decoder),
+  )
+}
+
+const session_resource_type = "pevensie:session"
+
+pub fn create_session(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    Connected,
+  ),
+  user_id: String,
+  ttl_seconds: Option(Int),
+) -> Result(Session, Nil) {
+  // Check if the user exists
+  use user <- result.try(get_user_by_id(pevensie, user_id))
+
+  let ttl_seconds = option.unwrap(ttl_seconds, 24 * 60 * 60)
+  let now = birl.now()
+  let session =
+    Session(
+      id: uuid.v7_string(),
+      user_id: user.id,
+      created_at: now,
+      expires_at: birl.add(now, duration.seconds(ttl_seconds)),
+    )
+
+  use _ <- result.try(cache.store(
+    pevensie,
+    session_resource_type,
+    session.id,
+    session
+      |> encode_session
+      |> json.to_string,
+    Some(ttl_seconds),
+  ))
+
+  Ok(session)
+}
+
+pub fn get_session(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    Connected,
+  ),
+  session_id: String,
+) -> Result(Option(Session), Nil) {
+  use session <- result.try(cache.get(
+    pevensie,
+    session_resource_type,
+    session_id,
+  ))
+  case session {
+    None -> Ok(None)
+    Some(session_string) -> {
+      use decoded_session <- result.try(
+        json.decode(session_string, session_decoder())
+        |> result.replace_error(Nil),
+      )
+      Ok(Some(decoded_session))
+    }
+  }
+}
+
+pub fn delete_session(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    Connected,
+  ),
+  session_id: String,
+) -> Result(Nil, Nil) {
+  use _ <- result.try(cache.delete(pevensie, session_resource_type, session_id))
+  Ok(Nil)
+}
+
+pub fn log_in_user(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    Connected,
+  ),
+  email: String,
+  password: String,
+) -> Result(#(Session, User(user_metadata)), Nil) {
+  use user <- result.try(get_user_by_email_and_password(
+    pevensie,
+    email,
+    password,
+  ))
+  create_session(pevensie, user.id, Some(24 * 60 * 60))
+  |> result.map(fn(session) { #(session, user) })
 }
