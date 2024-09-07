@@ -1,24 +1,25 @@
 import argus
-import birl.{type Time}
-import birl/duration
+import gleam/bit_array
+import gleam/crypto.{Sha256}
 import gleam/dict
 import gleam/dynamic.{type Decoder}
-import gleam/json
+import gleam/io
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import pevensie/cache
+import gleam/string
 import pevensie/drivers.{
   type AuthDriver, type Connected, type Disabled, type Disconnected,
 }
 import pevensie/internal/auth
 import pevensie/internal/encoder.{type Encoder}
 import pevensie/internal/pevensie.{type Pevensie}
+import pevensie/internal/session.{type Session}
 import pevensie/internal/user.{
   type User as InternalUser, type UserInsert as UserInsertInternal,
   type UserUpdate as UserUpdateInternal, Set, UserInsert, UserUpdate,
   default_user_update,
 }
-import youid/uuid
+import pevensie/net.{type IpAddress}
 
 pub type User(user_metadata) =
   InternalUser(user_metadata)
@@ -36,8 +37,14 @@ pub fn new_auth_config(
   driver driver: AuthDriver(driver, user_metadata),
   user_metadata_decoder user_metadata_decoder: Decoder(user_metadata),
   user_metadata_encoder user_metadata_encoder: Encoder(user_metadata),
+  cookie_key cookie_key: String,
 ) -> AuthConfig(driver, user_metadata, Disconnected) {
-  auth.AuthConfig(driver, user_metadata_decoder, user_metadata_encoder)
+  auth.AuthConfig(
+    driver:,
+    user_metadata_decoder:,
+    user_metadata_encoder:,
+    cookie_key:,
+  )
 }
 
 pub fn disabled() -> AuthConfig(Nil, user_metadata, Disabled) {
@@ -120,9 +127,10 @@ pub fn create_user_with_email(
   user_metadata: user_metadata,
 ) -> Result(User(user_metadata), Nil) {
   let assert auth.AuthConfig(
-    driver,
-    user_metadata_decoder,
-    user_metadata_encoder,
+    driver:,
+    user_metadata_decoder:,
+    user_metadata_encoder:,
+    ..,
   ) = pevensie.auth_config
 
   // TODO: Handle errors
@@ -161,6 +169,7 @@ pub fn set_user_role(
     driver:,
     user_metadata_decoder:,
     user_metadata_encoder:,
+    ..,
   ) = pevensie.auth_config
 
   driver.update_user(
@@ -173,72 +182,29 @@ pub fn set_user_role(
   )
 }
 
-pub type Session {
-  Session(id: String, user_id: String, created_at: Time, expires_at: Time)
-}
-
-fn encode_session(session: Session) -> json.Json {
-  json.object([
-    #("id", json.string(session.id)),
-    #("user_id", json.string(session.user_id)),
-    #("created_at", json.string(birl.to_iso8601(session.created_at))),
-    #("expires_at", json.string(birl.to_iso8601(session.expires_at))),
-  ])
-}
-
-fn session_decoder() -> Decoder(Session) {
-  let time_decoder = fn(time) {
-    use time <- result.try(dynamic.string(time))
-    birl.parse(time)
-    |> result.replace_error([])
-  }
-
-  dynamic.decode4(
-    Session,
-    dynamic.field("id", dynamic.string),
-    dynamic.field("user_id", dynamic.string),
-    dynamic.field("created_at", time_decoder),
-    dynamic.field("expires_at", time_decoder),
-  )
-}
-
-const session_resource_type = "pevensie:session"
-
 pub fn create_session(
   pevensie: Pevensie(
     user_metadata,
     auth_driver,
     Connected,
     cache_driver,
-    Connected,
+    cache_status,
   ),
   user_id: String,
+  ip: Option(IpAddress),
+  user_agent: Option(String),
   ttl_seconds: Option(Int),
 ) -> Result(Session, Nil) {
-  // Check if the user exists
-  use user <- result.try(get_user_by_id(pevensie, user_id))
+  let assert auth.AuthConfig(driver, ..) = pevensie.auth_config
 
-  let ttl_seconds = option.unwrap(ttl_seconds, 24 * 60 * 60)
-  let now = birl.now()
-  let session =
-    Session(
-      id: uuid.v7_string(),
-      user_id: user.id,
-      created_at: now,
-      expires_at: birl.add(now, duration.seconds(ttl_seconds)),
-    )
-
-  use _ <- result.try(cache.store(
-    pevensie,
-    session_resource_type,
-    session.id,
-    session
-      |> encode_session
-      |> json.to_string,
-    Some(ttl_seconds),
-  ))
-
-  Ok(session)
+  driver.create_session(
+    driver.driver,
+    user_id,
+    ip,
+    user_agent,
+    ttl_seconds,
+    False,
+  )
 }
 
 pub fn get_session(
@@ -247,25 +213,13 @@ pub fn get_session(
     auth_driver,
     Connected,
     cache_driver,
-    Connected,
+    cache_status,
   ),
   session_id: String,
 ) -> Result(Option(Session), Nil) {
-  use session <- result.try(cache.get(
-    pevensie,
-    session_resource_type,
-    session_id,
-  ))
-  case session {
-    None -> Ok(None)
-    Some(session_string) -> {
-      use decoded_session <- result.try(
-        json.decode(session_string, session_decoder())
-        |> result.replace_error(Nil),
-      )
-      Ok(Some(decoded_session))
-    }
-  }
+  let assert auth.AuthConfig(driver, ..) = pevensie.auth_config
+
+  driver.get_session(driver.driver, session_id, None, None)
 }
 
 pub fn delete_session(
@@ -278,8 +232,9 @@ pub fn delete_session(
   ),
   session_id: String,
 ) -> Result(Nil, Nil) {
-  use _ <- result.try(cache.delete(pevensie, session_resource_type, session_id))
-  Ok(Nil)
+  let assert auth.AuthConfig(driver, ..) = pevensie.auth_config
+
+  driver.delete_session(driver.driver, session_id)
 }
 
 pub fn log_in_user(
@@ -292,12 +247,62 @@ pub fn log_in_user(
   ),
   email: String,
   password: String,
+  ip: Option(IpAddress),
+  user_agent: Option(String),
 ) -> Result(#(Session, User(user_metadata)), Nil) {
   use user <- result.try(get_user_by_email_and_password(
     pevensie,
     email,
     password,
   ))
-  create_session(pevensie, user.id, Some(24 * 60 * 60))
+  create_session(pevensie, user.id, ip, user_agent, Some(24 * 60 * 60))
   |> result.map(fn(session) { #(session, user) })
+}
+
+fn sha256_hash(data: String, key: String) -> Result(String, Nil) {
+  let key = bit_array.from_string(key)
+  let data = bit_array.from_string(data)
+  Ok(crypto.sign_message(data, key, Sha256))
+}
+
+pub fn create_cookie(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    cache_status,
+  ),
+  session: Session,
+) -> Result(String, Nil) {
+  let assert auth.AuthConfig(cookie_key:, ..) = pevensie.auth_config
+  io.println("Creating hash")
+  use hash <- result.try(sha256_hash(session.id, cookie_key))
+  io.println("Hash created")
+  Ok(session.id <> "|" <> hash)
+}
+
+// TODO: Improve errors
+pub fn verify_cookie(
+  pevensie: Pevensie(
+    user_metadata,
+    auth_driver,
+    Connected,
+    cache_driver,
+    cache_status,
+  ),
+  cookie: String,
+) -> Result(String, Nil) {
+  let assert auth.AuthConfig(cookie_key:, ..) = pevensie.auth_config
+  let cookie_parts = string.split(cookie, "|")
+  case cookie_parts {
+    [session_id, hash_string] -> {
+      use new_hash <- result.try(sha256_hash(session_id, cookie_key))
+      case new_hash == hash_string {
+        True -> Ok(session_id)
+        False -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
 }

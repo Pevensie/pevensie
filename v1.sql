@@ -50,8 +50,9 @@ language plpgsql
 
 create schema if not exists pevensie;
 
+-- user
 create table if not exists pevensie."user" (
-  id uuid not null default uuid7(),
+  id uuid not null default uuid7() primary key,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
@@ -67,9 +68,20 @@ create table if not exists pevensie."user" (
   banned_until timestamptz
 );
 
-create unique index user_email_unique_idx on "user" (email, deleted_at) where (email is not null) nulls not distinct;
+create unique index user_email_unique_idx on pevensie."user" (email, deleted_at) nulls not distinct where (email is not null);
 
-create table if not exists pevensie."cache" (
+-- session
+create table if not exists pevensie."session" (
+  id uuid not null default uuid7() primary key,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz,
+  user_id uuid not null references pevensie."user"(id),
+  ip inet,
+  user_agent text
+);
+
+-- cache
+create unlogged table if not exists pevensie."cache" (
   resource_type text not null,
   key text not null unique,
   value text not null,

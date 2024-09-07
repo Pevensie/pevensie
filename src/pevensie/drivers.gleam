@@ -1,7 +1,9 @@
 import gleam/dynamic.{type Decoder}
 import gleam/option.{type Option}
 import pevensie/internal/encoder.{type Encoder}
+import pevensie/internal/session.{type Session}
 import pevensie/internal/user.{type User, type UserInsert, type UserUpdate}
+import pevensie/net.{type IpAddress}
 
 pub type Connected
 
@@ -64,6 +66,35 @@ type DeleteUserFunction(auth_driver, user_metadata) =
   fn(auth_driver, String, String, Decoder(user_metadata)) ->
     Result(User(user_metadata), Nil)
 
+/// A function that gets a session by ID.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - session_id: The ID of the session to get.
+///   - ip: The IP address of the user.
+///   - user_agent: The user agent of the user.
+type GetSessionFunction(auth_driver) =
+  fn(auth_driver, String, Option(IpAddress), Option(String)) ->
+    Result(Option(Session), Nil)
+
+/// A function that creates a new session for a user.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - user_id: The ID of the user to create a session for.
+///   - ip: The IP address of the user.
+///   - user_agent: The user agent of the user.
+///   - ttl_seconds: The number of seconds the session should last for.
+///   - delete_other_sessions: Whether to delete any other sessions for the user.
+type CreateSessionFunction(auth_driver) =
+  fn(auth_driver, String, Option(IpAddress), Option(String), Option(Int), Bool) ->
+    Result(Session, Nil)
+
+/// A function that deletes a session by ID.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - session_id: The ID of the session to delete.
+type DeleteSessionFunction(auth_driver) =
+  fn(auth_driver, String) -> Result(Nil, Nil)
+
 pub type AuthDriver(driver, user_metadata) {
   AuthDriver(
     driver: driver,
@@ -73,6 +104,9 @@ pub type AuthDriver(driver, user_metadata) {
     insert_user: InsertUserFunction(driver, user_metadata),
     update_user: UpdateUserFunction(driver, user_metadata),
     delete_user: DeleteUserFunction(driver, user_metadata),
+    get_session: GetSessionFunction(driver),
+    create_session: CreateSessionFunction(driver),
+    delete_session: DeleteSessionFunction(driver),
   )
 }
 

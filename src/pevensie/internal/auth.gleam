@@ -7,6 +7,7 @@ pub type AuthConfig(driver, user_metadata, connected) {
     driver: AuthDriver(driver, user_metadata),
     user_metadata_decoder: Decoder(user_metadata),
     user_metadata_encoder: Encoder(user_metadata),
+    cookie_key: String,
   )
   AuthDisabled
 }

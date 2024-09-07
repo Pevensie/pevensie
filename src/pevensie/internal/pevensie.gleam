@@ -61,7 +61,12 @@ pub fn connect_auth(
   Nil,
 ) {
   let assert Pevensie(
-    AuthConfig(auth_driver, user_metadata_decoder, user_metadata_encoder),
+    AuthConfig(
+      driver: auth_driver,
+      user_metadata_decoder:,
+      user_metadata_encoder:,
+      cookie_key:,
+    ),
     cache_config,
   ) = pevensie
 
@@ -72,6 +77,7 @@ pub fn connect_auth(
         driver: AuthDriver(..auth_driver, driver: internal_driver),
         user_metadata_decoder:,
         user_metadata_encoder:,
+        cookie_key:,
       ),
       cache_config:,
     )
@@ -91,7 +97,12 @@ pub fn disconnect_auth(
   Nil,
 ) {
   let assert Pevensie(
-    AuthConfig(auth_driver, user_metadata_decoder, user_metadata_encoder),
+    AuthConfig(
+      driver: auth_driver,
+      user_metadata_decoder:,
+      user_metadata_encoder:,
+      cookie_key:,
+    ),
     cache_config,
   ) = pevensie
 
@@ -102,6 +113,7 @@ pub fn disconnect_auth(
         driver: AuthDriver(..auth_driver, driver: internal_driver),
         user_metadata_decoder:,
         user_metadata_encoder:,
+        cookie_key:,
       ),
       cache_config:,
     )
