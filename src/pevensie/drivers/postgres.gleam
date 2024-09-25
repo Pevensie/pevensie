@@ -18,12 +18,12 @@ import pevensie/drivers.{
   type AuthDriver, type CacheDriver, AuthDriver, CacheDriver,
 }
 import pevensie/internal/encoder.{type Encoder}
-import pevensie/internal/session.{type Session, Session}
-import pevensie/internal/user.{
-  type UpdateField, type User, type UserInsert, type UserUpdate, Ignore, Set,
-  User, app_metadata_to_json,
-}
 import pevensie/net.{type IpAddress}
+import pevensie/session.{type Session, Session}
+import pevensie/user.{
+  type UpdateField, type User, type UserInsert, type UserSearchFields,
+  type UserUpdate, Ignore, Set, User, app_metadata_encoder,
+}
 
 pub type IpVersion {
   Ipv4
@@ -98,8 +98,8 @@ pub fn new_auth_driver(
     driver: Postgres(config |> postgres_config_to_pgo_config, None),
     connect: connect,
     disconnect: disconnect,
-    get_user: fn(driver, field, value, decoder) {
-      get_user(driver, field, value, decoder)
+    list_users: fn(driver, user_search_fields, decoder) {
+      list_users(driver, user_search_fields, decoder)
       // TODO: Handle errors
       |> result.map_error(fn(_err) { Nil })
     },
@@ -270,7 +270,7 @@ fn postgres_user_decoder(
           Some(birl.from_unix_micro(last_sign_in_tuple))
       }
 
-      use app_metadata <- result.try(
+      use app_metadata_data <- result.try(
         json.decode(
           app_metadata_string,
           dynamic.dict(dynamic.string, dynamic.dynamic),
@@ -318,7 +318,7 @@ fn postgres_user_decoder(
         phone_number:,
         phone_number_confirmed_at:,
         last_sign_in:,
-        app_metadata:,
+        app_metadata: user.new_app_metadata(app_metadata_data),
         user_metadata:,
         banned_until:,
       ))
@@ -342,35 +342,50 @@ fn postgres_user_decoder(
   }
 }
 
-fn get_user(
+fn list_users(
   driver: Postgres,
-  by column: String,
-  with value: String,
+  filters: UserSearchFields,
   using user_metadata_decoder: Decoder(user_metadata),
-) -> Result(User(user_metadata), PostgresError) {
+) -> Result(List(User(user_metadata)), PostgresError) {
   let assert Postgres(_, Some(conn)) = driver
+
+  let filter_fields =
+    [
+      #("id", filters.id),
+      #("email", filters.email),
+      #("phone_number", filters.phone_number),
+    ]
+    |> list.filter(fn(field) { option.is_some(field.1) })
+    |> list.index_map(fn(field, index) {
+      #(
+        // Filter SQL
+        field.0 <> " like any($" <> int.to_string(index + 1) <> ")",
+        // Filter values
+        field.1 |> option.unwrap([]) |> pgo.array,
+      )
+    })
+
+  let filter_sql =
+    filter_fields
+    |> list.map(pair.first)
+    |> string.join(" and ")
 
   let sql = "
     select
       " <> user_select_fields <> "
     from pevensie.\"user\"
-    where " <> column <> " = $1 and deleted_at is null"
+    where " <> filter_sql <> " and deleted_at is null"
 
   let query_result =
     pgo.execute(
       sql,
       conn,
-      [pgo.text(value)],
+      filter_fields |> list.map(pair.second),
       postgres_user_decoder(user_metadata_decoder),
     )
     |> result.map_error(QueryError)
 
-  use response <- result.try(query_result)
-  case response.rows {
-    [] -> Error(NotFound)
-    [user] -> Ok(user)
-    _ -> Error(InternalError("Unexpected number of rows returned"))
-  }
+  query_result |> result.map(fn(response) { response.rows })
 }
 
 fn insert_user(
@@ -421,7 +436,7 @@ fn insert_user(
           pgo.timestamp,
           user.phone_number_confirmed_at |> option.map(birl.to_erlang_datetime),
         ),
-        pgo.text(app_metadata_to_json(user.app_metadata) |> json.to_string),
+        pgo.text(app_metadata_encoder(user.app_metadata) |> json.to_string),
         pgo.text(user_metadata_encoder(user.user_metadata) |> json.to_string),
       ],
       postgres_user_decoder(user_metadata_decoder),
@@ -431,7 +446,6 @@ fn insert_user(
 
   use response <- result.try(query_result)
   case response.rows {
-    [] -> Error(NotFound)
     [user] -> Ok(user)
     _ -> Error(InternalError("Unexpected number of rows returned"))
   }
@@ -499,7 +513,7 @@ fn update_user(
       "app_metadata",
       update_field_to_sql(user.app_metadata, record_to_pgo(
         _,
-        app_metadata_to_json,
+        app_metadata_encoder,
       )),
     ),
     #(

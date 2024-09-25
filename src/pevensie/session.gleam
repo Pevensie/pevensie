@@ -2,6 +2,8 @@ import birl.{type Time}
 import gleam/option.{type Option}
 import pevensie/net.{type IpAddress}
 
+// ---- Session ----- //
+
 pub type Session {
   Session(
     id: String,

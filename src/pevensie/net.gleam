@@ -52,7 +52,12 @@ pub fn format_ip_address(ip: IpAddress) -> String {
     }
     IpV6(a, b, c, d, e, f, g, h) -> {
       [a, b, c, d, e, f, g, h]
-      |> list.map(int.to_string)
+      |> list.map(fn(value) {
+        case value {
+          0 -> ""
+          _ -> int.to_base16(value) |> string.pad_left(to: 4, with: "0")
+        }
+      })
       |> string.join(":")
     }
   }

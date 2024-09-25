@@ -1,45 +1,43 @@
 import argus
+import birl
 import gleam/bit_array
 import gleam/crypto.{Sha256}
 import gleam/dict
 import gleam/dynamic.{type Decoder}
+import gleam/erlang/process
 import gleam/io
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import pevensie/drivers.{
-  type AuthDriver, type Connected, type Disabled, type Disconnected,
+  type AuthDriver, type Connected, type Disconnected, AuthDriver,
 }
-import pevensie/internal/auth
 import pevensie/internal/encoder.{type Encoder}
-import pevensie/internal/pevensie.{type Pevensie}
-import pevensie/internal/session.{type Session}
-import pevensie/internal/user.{
-  type User as InternalUser, type UserInsert as UserInsertInternal,
-  type UserUpdate as UserUpdateInternal, Set, UserInsert, UserUpdate,
-  default_user_update,
-}
 import pevensie/net.{type IpAddress}
+import pevensie/session.{type Session}
+import pevensie/user.{
+  type User, type UserSearchFields, type UserUpdate, Set, UserInsert,
+  UserSearchFields, UserUpdate, default_user_search_fields, default_user_update,
+}
 
-pub type User(user_metadata) =
-  InternalUser(user_metadata)
+// ----- PevensieAuth ----- //
 
-pub type UserInsert(user_metadata) =
-  UserInsertInternal(user_metadata)
+pub opaque type PevensieAuth(driver, user_metadata, connected) {
+  PevensieAuth(
+    driver: AuthDriver(driver, user_metadata),
+    user_metadata_decoder: Decoder(user_metadata),
+    user_metadata_encoder: Encoder(user_metadata),
+    cookie_key: String,
+  )
+}
 
-pub type UserUpdate(user_metadata) =
-  UserUpdateInternal(user_metadata)
-
-pub type AuthConfig(driver, user_metadata, connected) =
-  auth.AuthConfig(driver, user_metadata, connected)
-
-pub fn new_auth_config(
+pub fn new(
   driver driver: AuthDriver(driver, user_metadata),
   user_metadata_decoder user_metadata_decoder: Decoder(user_metadata),
   user_metadata_encoder user_metadata_encoder: Encoder(user_metadata),
   cookie_key cookie_key: String,
-) -> AuthConfig(driver, user_metadata, Disconnected) {
-  auth.AuthConfig(
+) -> PevensieAuth(driver, user_metadata, Disconnected) {
+  PevensieAuth(
     driver:,
     user_metadata_decoder:,
     user_metadata_encoder:,
@@ -47,40 +45,93 @@ pub fn new_auth_config(
   )
 }
 
-pub fn disabled() -> AuthConfig(Nil, user_metadata, Disabled) {
-  auth.AuthDisabled
+pub fn connect(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Disconnected),
+) -> Result(PevensieAuth(auth_driver, user_metadata, Connected), Nil) {
+  let PevensieAuth(
+    driver: auth_driver,
+    user_metadata_decoder:,
+    user_metadata_encoder:,
+    cookie_key:,
+  ) = pevensie_auth
+
+  auth_driver.connect(auth_driver.driver)
+  |> result.map(fn(internal_driver) {
+    PevensieAuth(
+      driver: AuthDriver(..auth_driver, driver: internal_driver),
+      user_metadata_decoder:,
+      user_metadata_encoder:,
+      cookie_key:,
+    )
+  })
+}
+
+pub fn disconnect(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+) -> Result(PevensieAuth(auth_driver, user_metadata, Disconnected), Nil) {
+  let PevensieAuth(
+    driver: auth_driver,
+    user_metadata_decoder:,
+    user_metadata_encoder:,
+    cookie_key:,
+  ) = pevensie_auth
+
+  auth_driver.disconnect(auth_driver.driver)
+  |> result.map(fn(internal_driver) {
+    PevensieAuth(
+      driver: AuthDriver(..auth_driver, driver: internal_driver),
+      user_metadata_decoder:,
+      user_metadata_encoder:,
+      cookie_key:,
+    )
+  })
+}
+
+// ----- User CRUD Functions ----- //
+
+pub fn list_users(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  filters: UserSearchFields,
+) -> Result(List(User(user_metadata)), Nil) {
+  let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
+
+  driver.list_users(driver.driver, filters, user_metadata_decoder)
 }
 
 pub fn get_user_by_id(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   id: String,
 ) -> Result(User(user_metadata), Nil) {
-  let assert auth.AuthConfig(driver, user_metadata_decoder, ..) =
-    pevensie.auth_config
+  let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
-  driver.get_user(driver.driver, "id", id, user_metadata_decoder)
+  use users <- result.try(driver.list_users(
+    driver.driver,
+    UserSearchFields(..default_user_search_fields(), id: Some([id])),
+    user_metadata_decoder,
+  ))
+
+  case users {
+    [user] -> Ok(user)
+    _ -> Error(Nil)
+  }
 }
 
 pub fn get_user_by_email(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   email: String,
 ) -> Result(User(user_metadata), Nil) {
-  let assert auth.AuthConfig(driver, user_metadata_decoder, ..) =
-    pevensie.auth_config
+  let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
-  driver.get_user(driver.driver, "email", email, user_metadata_decoder)
+  use users <- result.try(driver.list_users(
+    driver.driver,
+    UserSearchFields(..default_user_search_fields(), email: Some([email])),
+    user_metadata_decoder,
+  ))
+
+  case users {
+    [user] -> Ok(user)
+    _ -> Error(Nil)
+  }
 }
 
 fn hash_password(password: String) {
@@ -89,25 +140,11 @@ fn hash_password(password: String) {
 }
 
 pub fn get_user_by_email_and_password(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   email: String,
   password: String,
 ) -> Result(User(user_metadata), Nil) {
-  let assert auth.AuthConfig(driver, user_metadata_decoder, ..) =
-    pevensie.auth_config
-
-  use user <- result.try(driver.get_user(
-    driver.driver,
-    "email",
-    email,
-    user_metadata_decoder,
-  ))
+  use user <- result.try(get_user_by_email(pevensie_auth, email))
   case argus.verify(user.password_hash |> option.unwrap(""), password) {
     Ok(True) -> Ok(user)
     _ -> Error(Nil)
@@ -115,23 +152,13 @@ pub fn get_user_by_email_and_password(
 }
 
 pub fn create_user_with_email(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   email: String,
   password: String,
   user_metadata: user_metadata,
 ) -> Result(User(user_metadata), Nil) {
-  let assert auth.AuthConfig(
-    driver:,
-    user_metadata_decoder:,
-    user_metadata_encoder:,
-    ..,
-  ) = pevensie.auth_config
+  let PevensieAuth(driver:, user_metadata_decoder:, user_metadata_encoder:, ..) =
+    pevensie_auth
 
   // TODO: Handle errors
   let assert Ok(hashed_password) = hash_password(password)
@@ -146,7 +173,7 @@ pub fn create_user_with_email(
       phone_number: None,
       phone_number_confirmed_at: None,
       last_sign_in: None,
-      app_metadata: dict.new(),
+      app_metadata: user.new_app_metadata(dict.new()),
       user_metadata: user_metadata,
     ),
     user_metadata_decoder,
@@ -154,48 +181,79 @@ pub fn create_user_with_email(
   )
 }
 
-pub fn set_user_role(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+pub fn update_user(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   id: String,
-  role: Option(String),
+  user_update: UserUpdate(user_metadata),
 ) -> Result(User(user_metadata), Nil) {
-  let assert auth.AuthConfig(
-    driver:,
-    user_metadata_decoder:,
-    user_metadata_encoder:,
-    ..,
-  ) = pevensie.auth_config
+  let PevensieAuth(driver:, user_metadata_decoder:, user_metadata_encoder:, ..) =
+    pevensie_auth
 
   driver.update_user(
     driver.driver,
     "id",
     id,
-    UserUpdate(..default_user_update(), role: Set(role)),
+    user_update,
     user_metadata_decoder,
     user_metadata_encoder,
   )
 }
 
+pub fn set_user_role(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  id: String,
+  role: Option(String),
+) -> Result(User(user_metadata), Nil) {
+  update_user(
+    pevensie_auth,
+    id,
+    UserUpdate(..default_user_update(), role: Set(role)),
+  )
+}
+
+pub fn set_user_email(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  id: String,
+  email: String,
+) -> Result(User(user_metadata), Nil) {
+  update_user(
+    pevensie_auth,
+    id,
+    UserUpdate(..default_user_update(), email: Set(email)),
+  )
+}
+
+pub fn set_user_password(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  id: String,
+  password: Option(String),
+) -> Result(User(user_metadata), Nil) {
+  let password_hash_result = case password {
+    None -> Ok(None)
+    Some(password) ->
+      hash_password(password)
+      |> result.replace_error(Nil)
+      |> result.map(fn(hashes) { Some(hashes.encoded_hash) })
+  }
+
+  use password_hash <- result.try(password_hash_result)
+  update_user(
+    pevensie_auth,
+    id,
+    UserUpdate(..default_user_update(), password_hash: Set(password_hash)),
+  )
+}
+
+// ----- Session CRUD Functions ----- //
+
 pub fn create_session(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   user_id: String,
   ip: Option(IpAddress),
   user_agent: Option(String),
   ttl_seconds: Option(Int),
 ) -> Result(Session, Nil) {
-  let assert auth.AuthConfig(driver, ..) = pevensie.auth_config
+  let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.create_session(
     driver.driver,
@@ -208,56 +266,54 @@ pub fn create_session(
 }
 
 pub fn get_session(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   session_id: String,
 ) -> Result(Option(Session), Nil) {
-  let assert auth.AuthConfig(driver, ..) = pevensie.auth_config
+  let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.get_session(driver.driver, session_id, None, None)
 }
 
 pub fn delete_session(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    Connected,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   session_id: String,
 ) -> Result(Nil, Nil) {
-  let assert auth.AuthConfig(driver, ..) = pevensie.auth_config
+  let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.delete_session(driver.driver, session_id)
 }
 
+// ----- User Authentication ----- //
+
 pub fn log_in_user(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    Connected,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   email: String,
   password: String,
   ip: Option(IpAddress),
   user_agent: Option(String),
 ) -> Result(#(Session, User(user_metadata)), Nil) {
   use user <- result.try(get_user_by_email_and_password(
-    pevensie,
+    pevensie_auth,
     email,
     password,
   ))
-  create_session(pevensie, user.id, ip, user_agent, Some(24 * 60 * 60))
+
+  process.start(
+    fn() {
+      update_user(
+        pevensie_auth,
+        user.id,
+        UserUpdate(..default_user_update(), last_sign_in: Set(Some(birl.now()))),
+      )
+    },
+    False,
+  )
+
+  create_session(pevensie_auth, user.id, ip, user_agent, Some(24 * 60 * 60))
   |> result.map(fn(session) { #(session, user) })
 }
+
+// ----- Cookies ----- //
 
 fn sha256_hash(data: String, key: String) -> Result(String, Nil) {
   let key = bit_array.from_string(key)
@@ -266,16 +322,10 @@ fn sha256_hash(data: String, key: String) -> Result(String, Nil) {
 }
 
 pub fn create_cookie(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   session: Session,
 ) -> Result(String, Nil) {
-  let assert auth.AuthConfig(cookie_key:, ..) = pevensie.auth_config
+  let PevensieAuth(cookie_key:, ..) = pevensie_auth
   io.println("Creating hash")
   use hash <- result.try(sha256_hash(session.id, cookie_key))
   io.println("Hash created")
@@ -284,16 +334,10 @@ pub fn create_cookie(
 
 // TODO: Improve errors
 pub fn verify_cookie(
-  pevensie: Pevensie(
-    user_metadata,
-    auth_driver,
-    Connected,
-    cache_driver,
-    cache_status,
-  ),
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   cookie: String,
 ) -> Result(String, Nil) {
-  let assert auth.AuthConfig(cookie_key:, ..) = pevensie.auth_config
+  let PevensieAuth(cookie_key:, ..) = pevensie_auth
   let cookie_parts = string.split(cookie, "|")
   case cookie_parts {
     [session_id, hash_string] -> {

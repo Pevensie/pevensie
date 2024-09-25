@@ -69,6 +69,7 @@ create table if not exists pevensie."user" (
 );
 
 create unique index user_email_unique_idx on pevensie."user" (email, deleted_at) nulls not distinct where (email is not null);
+create unique index user_phone_number_unique_idx on pevensie."user" (phone_number, deleted_at) nulls not distinct where (phone_number is not null);
 
 -- session
 create table if not exists pevensie."session" (
