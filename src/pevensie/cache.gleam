@@ -10,7 +10,7 @@ pub type PevensieCache(driver, connected) {
   PevensieCache(driver: CacheDriver(driver))
 }
 
-pub fn new_cache_config(
+pub fn new(
   driver driver: CacheDriver(cache_driver),
 ) -> PevensieCache(cache_driver, Disconnected) {
   PevensieCache(driver:)

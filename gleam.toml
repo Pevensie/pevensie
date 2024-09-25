@@ -4,16 +4,12 @@ description = "The backend web toolkit for Gleam!"
 licences = ["MIT"]
 repository = { type = "github", user = "Pevensie", repo = "pevensie" }
 links = [{ title = "Website", href = "https://pevensie.dev" }]
-
 target = "erlang"
-
-# For a full reference of all the available options, you can have a look at
-# https://gleam.run/writing-gleam/gleam-toml/.
 
 [dependencies]
 gleam_stdlib = ">= 0.34.0 and < 2.0.0"
 gleam_erlang = ">= 0.25.0 and < 1.0.0"
-argus = ">= 1.0.0 and < 2.0.0"
+argus = ">= 1.0.1 and < 2.0.0"
 gleam_pgo = ">= 0.13.0 and < 1.0.0"
 birl = ">= 1.7.1 and < 2.0.0"
 decode = ">= 0.2.0 and < 1.0.0"
