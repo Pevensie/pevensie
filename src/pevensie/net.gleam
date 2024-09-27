@@ -1,3 +1,6 @@
+//// `pevensie/net` contains convencience functions for working with
+//// IP addresses and other networking-related tasks.
+
 import gleam/erlang/atom.{type Atom}
 import gleam/erlang/charlist.{type Charlist}
 import gleam/int
@@ -5,13 +8,16 @@ import gleam/list
 import gleam/result
 import gleam/string
 
+/// An IP address. Can be either an IPv4 or IPv6 address. Data is stored
+/// as a record of integers. To display an IP address, use the
+/// [`format_ip_address`](#format_ip_address) function.
 pub type IpAddress {
   IpV4(Int, Int, Int, Int)
   IpV6(Int, Int, Int, Int, Int, Int, Int, Int)
 }
 
 // These accept Erlang `string()`s, which are not the same as Gleam `String`s.
-// We convert them to Erlang `string()`s (equivalent to Gleam `List(String)`s
+// We convert them to Erlang `string()`s (equivalent to `charlist.Charlist`s
 // where each element is a single character) before passing them to the
 // Erlang function.
 @external(erlang, "inet", "parse_ipv4_address")
@@ -38,11 +44,17 @@ fn parse_ipv6(ip: String) -> Result(IpAddress, Nil) {
   |> result.replace_error(Nil)
 }
 
+/// Parses an IP address from a string. Returns an error if the string
+/// is not a valid IP address. Accepts relaxed IPv4 and IPv6 formats,
+/// such as `127.1` and `2001:db8::1`.
 pub fn parse_ip_address(ip: String) -> Result(IpAddress, Nil) {
   parse_ipv4(ip)
   |> result.lazy_or(fn() { parse_ipv6(ip) })
 }
 
+/// Formats an IP address as a string. This is useful for displaying
+/// IP addresses in a user-friendly way, or for inserting them into
+/// a database.
 pub fn format_ip_address(ip: IpAddress) -> String {
   case ip {
     IpV4(a, b, c, d) -> {
@@ -55,7 +67,7 @@ pub fn format_ip_address(ip: IpAddress) -> String {
       |> list.map(fn(value) {
         case value {
           0 -> ""
-          _ -> int.to_base16(value) |> string.pad_left(to: 4, with: "0")
+          _ -> int.to_base16(value)
         }
       })
       |> string.join(":")

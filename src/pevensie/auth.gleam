@@ -1,3 +1,177 @@
+//// Pevensie makes it simple to add authentication to your Gleam applications.
+//// Currently only email/password authentication is supported, but more
+//// authentication methods (OAuth2, passkeys, etc.) are planned for the future.
+////
+//// While you can use Pevensie Auth without the rest of the Pevensie ecosystem,
+//// it's better used as a foundation on which to build a Pevensie-driven
+//// application. Other Pevensie modules are designed to integrate well with
+//// Pevensie Auth, so you can use them without worrying about authentication.
+////
+//// ## Getting Started
+////
+//// Pevensie Auth is driver-based, like many other Pevensie modules. This means
+//// that you need to choose a driver for your authentication needs. Pevensie
+//// provides in-house drivers, but hopefully in the future other drivers will
+//// be available.
+////
+//// To get started, you'll need to create a type to represent your user
+//// metadata (see [`pevensie/user`](/pevensie/user) for more details), as well
+//// as a decoder and encoder for that type.
+////
+//// ```gleam
+//// import gleam/dynamic.{type DecodeError}
+//// import gleam/json
+////
+//// pub type UserMetadata {
+////   UserMetadata(name: String, age: Int)
+//// }
+////
+//// pub fn user_metadata_decoder() -> Result(UserMetadata, List(DecodeError)) {
+////   // ...
+//// }
+////
+//// pub fn user_metadata_encoder(user_metadata: UserMetadata) -> json.Json {
+////   // ...
+//// }
+//// ```
+////
+//// Next, you'll need to create a driver of your choice. Here, we'll be using the
+//// first-party Postgres driver, but you can use any driver you like.
+////
+//// ```gleam
+//// import pevensie/drivers/postgres.{type PostgresConfig}
+////
+//// pub fn main() {
+////   let config = PostgresConfig(
+////     ..postgres.default_config(),
+////     database: "my_database",
+////   )
+////   let driver = postgres.new_auth_driver(config)
+////   // ...
+//// }
+//// ```
+////
+//// Now that you have a driver, you can create a Pevensie Auth instance. This
+//// instance will act as your entrypoint to the Pevensie Auth API.
+////
+//// ```gleam
+//// import pevensie/auth.{type PevensieAuth}
+////
+//// pub fn main() {
+////   // ...
+////   let driver = postgres.new_auth_driver(config)
+////   let pevensie_auth = auth.new(
+////     driver:,
+////     user_metadata_decoder:,
+////     user_metadata_encoder:,
+////     cookie_key: "super secret signing key",
+////   )
+////   // ...
+//// }
+//// ```
+////
+//// Make sure to call [`connect`](/pevensie/auth.html#connect) on your
+//// Pevensie Auth instance before using it. This allows your driver to
+//// perform any setup required, such as creating a database connection pool.
+//// Different drivers may require different setup and at different times
+//// (at the start of the application, once per request, etc.). See the
+//// documentation for your chosen driver for more information.
+////
+//// Finally, create your first user using
+//// [`create_user_with_email`](/pevensie/auth.html#create_user_with_email).
+////
+//// ```gleam
+//// import pevensie/auth.{type PevensieAuth}
+////
+//// pub fn main() {
+////   // ...
+////   let assert Ok(pevensie_auth) = auth.connect(pevensie_auth)
+////   auth.create_user_with_email(
+////     pevensie_auth,
+////     "lucy@pevensie.dev",
+////     "password",
+////     UserMetadata(name: "Lucy Pevensie", age: 8),
+////   )
+////   // ...
+//// }
+//// ```
+////
+//// ### Logging In Users
+////
+//// Pevensie Auth provides individual functions for verifying user credentials
+//// and creating sessions. However, it also provides a convenience function
+//// for logging in users, which will create a session and update the user's
+//// last sign in time.
+////
+//// ```gleam
+//// import pevensie/auth.{type PevensieAuth}
+////
+//// pub fn main() {
+////   // ...
+////   let assert Ok(#(session, user)) = auth.log_in_user(
+////     pevensie_auth,
+////     "lucy@pevensie.dev",
+////     "password",
+////     Some(net.parse_ip_address("127.1")),
+////     None,
+////   )
+////   // ...
+//// }
+//// ```
+////
+//// ## Drivers
+////
+//// Pevensie Auth is designed to be driver-agnostic, so you can use any driver
+//// you like. The drivers provided with Pevensie are:
+////
+//// - [`postgres`](/pevensie/drivers/postgres.html) - A driver for PostgreSQL
+////
+//// The hope is that other first- and third-party drivers will be available
+//// in the future.
+////
+//// > Note: database-based drivers will require migrations to be run before
+//// > using them. See the documentation for your chosen driver for more
+//// > information.
+////
+//// ## Session Management
+////
+//// Pevensie Auth provides a simple API for managing sessions. Sessions are
+//// managed using opaque session IDs, which are tied to a user ID and optionally
+//// an IP address and user agent.
+////
+//// Sessions are created using the
+//// [`create_session`](/pevensie/auth.html#create_session) function, and
+//// retrieved using the [`get_session`](/pevensie/auth.html#get_session)
+//// function. Sessions can be deleted using the
+//// [`delete_session`](/pevensie/auth.html#delete_session) function. Expired
+//// sessions may be deleted automatically by the driver, or they may be
+//// deleted manually using the
+//// [`delete_session`](/pevensie/auth.html#delete_session) function.
+////
+//// ```gleam
+//// import gleam/option.{None, Some}
+//// import pevensie/auth.{type PevensieAuth}
+//// import pevensie/net
+////
+//// pub fn main() {
+////   // ...
+////   let session = auth.create_session(
+////     pevensie_auth,
+////     user.id,
+////     Some(net.parse_ip_address("127.1")),
+////     None,
+////     Some(24 * 60 * 60),
+////   )
+////   // ...
+//// }
+//// ```
+////
+//// ### Cookies
+////
+//// Session tokens should be provided as cookies, and Pevensie Auth provides
+//// convenience functions for signing and verifying cookies. You can choose not
+//// to sign cookies, but it's generally recommended to do so.
+
 import argus
 import birl
 import gleam/bit_array
@@ -22,6 +196,29 @@ import pevensie/user.{
 
 // ----- PevensieAuth ----- //
 
+/// The entrypoint to the Pevensie Auth API. This type is used when using
+/// the majority of the functions in `pevensie/auth`.
+///
+/// You must connect your Pevensie Auth instance before using it. This
+/// allows your driver to perform any setup required, such as creating
+/// a database connection pool.
+///
+/// Create a new `PevensieAuth` instance using the
+/// [`new`](#new) function.
+///
+/// ```gleam
+/// import pevensie/auth.{type PevensieAuth}
+///
+/// pub fn main() {
+///   let pevensie_auth = auth.new(
+///     postgres.new_auth_driver(postgres.default_config()),
+///     user_metadata_decoder,
+///     user_metadata_encoder,
+///     "super secret signing key",
+///   )
+///   // ...
+/// }
+/// ```
 pub opaque type PevensieAuth(driver, user_metadata, connected) {
   PevensieAuth(
     driver: AuthDriver(driver, user_metadata),
@@ -31,6 +228,20 @@ pub opaque type PevensieAuth(driver, user_metadata, connected) {
   )
 }
 
+/// Creates a new [`PevensieAuth`](#PevensieAuth) instance.
+///
+/// The `driver` argument is the driver to use for authentication. This
+/// should be the driver that you've created using the `new_auth_driver`
+/// function.
+///
+/// The `user_metadata_decoder` and `user_metadata_encoder` arguments are
+/// used to decode and encode user metadata. These should be the inverse
+/// of each other, and should be able to handle both decoding and encoding
+/// user metadata to JSON.
+///
+/// The `cookie_key` argument is used to sign and verify cookies. It should
+/// be a long, random string. It's recommended to use a secret key from
+/// a cryptographically secure source, and store it in a secure location.
 pub fn new(
   driver driver: AuthDriver(driver, user_metadata),
   user_metadata_decoder user_metadata_decoder: Decoder(user_metadata),
@@ -45,6 +256,22 @@ pub fn new(
   )
 }
 
+/// Runs setup for your chosen auth driver and returns a connected
+/// [`PevensieAuth`](#PevensieAuth) instance.
+///
+/// This function must be called before using any other functions in
+/// the Pevensie Auth API. Attempting to use the API before calling
+/// `connect` will result in a compile error.
+///
+/// ```gleam
+/// import pevensie/auth.{type PevensieAuth}
+///
+/// pub fn main() {
+///   // ...
+///   let assert Ok(pevensie_auth) = auth.connect(pevensie_auth)
+///   // ...
+/// }
+/// ```
 pub fn connect(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Disconnected),
 ) -> Result(PevensieAuth(auth_driver, user_metadata, Connected), Nil) {
@@ -66,6 +293,8 @@ pub fn connect(
   })
 }
 
+/// Runs teardown for your chosen auth driver and returns a disconnected
+/// [`PevensieAuth`](#PevensieAuth) instance.
 pub fn disconnect(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
 ) -> Result(PevensieAuth(auth_driver, user_metadata, Disconnected), Nil) {
@@ -89,24 +318,49 @@ pub fn disconnect(
 
 // ----- User CRUD Functions ----- //
 
+/// Retrieves a list of users based on the given search fields.
+///
+/// The `filters` argument is a [`UserSearchFields`](/pevensie/user.html#UserSearchFields)
+/// type that contains the search fields to use. The `UserSearchFields` type
+/// contains a number of fields, such as `id`, `email`, and `phone_number`.
+/// Each field can be set to a list of values to search for, or to `None` to
+/// search for all values.
+///
+/// Drivers may handle search fields differently, so see the documentation
+/// for your chosen driver for more information.
 pub fn list_users(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  filters: UserSearchFields,
+  limit limit: Int,
+  offset offset: Int,
+  filters filters: UserSearchFields,
 ) -> Result(List(User(user_metadata)), Nil) {
   let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
-  driver.list_users(driver.driver, filters, user_metadata_decoder)
+  driver.list_users(
+    driver.driver,
+    limit,
+    offset,
+    filters,
+    user_metadata_decoder,
+  )
 }
 
+/// Fetch a single user by ID.
+///
+/// Errors if exactly one user is not found.
 pub fn get_user_by_id(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  id: String,
+  user_id user_id: String,
 ) -> Result(User(user_metadata), Nil) {
   let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
   use users <- result.try(driver.list_users(
     driver.driver,
-    UserSearchFields(..default_user_search_fields(), id: Some([id])),
+    // We only want one user, but we need to pass a limit of 2 so we can
+    // error if the search returns more than one user.
+    2,
+    0,
+    UserSearchFields(..default_user_search_fields(), id: Some([user_id])),
     user_metadata_decoder,
   ))
 
@@ -116,14 +370,21 @@ pub fn get_user_by_id(
   }
 }
 
+/// Fetch a single user by email.
+///
+/// Errors if exactly one user is not found.
 pub fn get_user_by_email(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  email: String,
+  email email: String,
 ) -> Result(User(user_metadata), Nil) {
   let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
   use users <- result.try(driver.list_users(
     driver.driver,
+    // We only want one user, but we need to pass a limit of 2 so we can
+    // error if the search returns more than one user.
+    2,
+    0,
     UserSearchFields(..default_user_search_fields(), email: Some([email])),
     user_metadata_decoder,
   ))
@@ -139,10 +400,14 @@ fn hash_password(password: String) {
   |> argus.hash(password, argus.gen_salt())
 }
 
+/// Fetch a single user by email and password.
+///
+/// Errors if exactly one user is not found, or if the password for the
+/// user is incorrect.
 pub fn get_user_by_email_and_password(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  email: String,
-  password: String,
+  email email: String,
+  password password: String,
 ) -> Result(User(user_metadata), Nil) {
   use user <- result.try(get_user_by_email(pevensie_auth, email))
   case argus.verify(user.password_hash |> option.unwrap(""), password) {
@@ -151,11 +416,12 @@ pub fn get_user_by_email_and_password(
   }
 }
 
+/// Create a new user with the given email and password.
 pub fn create_user_with_email(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  email: String,
-  password: String,
-  user_metadata: user_metadata,
+  email email: String,
+  password password: String,
+  user_metadata user_metadata: user_metadata,
 ) -> Result(User(user_metadata), Nil) {
   let PevensieAuth(driver:, user_metadata_decoder:, user_metadata_encoder:, ..) =
     pevensie_auth
@@ -181,10 +447,30 @@ pub fn create_user_with_email(
   )
 }
 
+/// Update a user by ID. See [`UserUpdate`](/pevensie/user.html#UserUpdate)
+/// for more information on how to provide the fields to be updated.
+///
+/// ```gleam
+/// import pevensie/auth.{type PevensieAuth}
+///
+/// pub fn main() {
+///   // ...
+///   let assert Ok(user) = auth.update_user(
+///     pevensie_auth,
+///     user.id,
+///     UserUpdate(..user.default_user_update(), email: Set("new_email@example.com")),
+///   )
+///   // ...
+/// }
+/// ```
+///
+/// > Note: if updating the user's password, you should use the
+/// > [`set_user_password`](#set_user_password) function instead in order
+/// > to hash the password before storing it in the database.
 pub fn update_user(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  id: String,
-  user_update: UserUpdate(user_metadata),
+  user_id user_id: String,
+  user_update user_update: UserUpdate(user_metadata),
 ) -> Result(User(user_metadata), Nil) {
   let PevensieAuth(driver:, user_metadata_decoder:, user_metadata_encoder:, ..) =
     pevensie_auth
@@ -192,41 +478,48 @@ pub fn update_user(
   driver.update_user(
     driver.driver,
     "id",
-    id,
+    user_id,
     user_update,
     user_metadata_decoder,
     user_metadata_encoder,
   )
 }
 
+/// Update a user's role.
 pub fn set_user_role(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  id: String,
-  role: Option(String),
+  user_id user_id: String,
+  role role: Option(String),
 ) -> Result(User(user_metadata), Nil) {
   update_user(
     pevensie_auth,
-    id,
+    user_id,
     UserUpdate(..default_user_update(), role: Set(role)),
   )
 }
 
+/// Update a user's email.
 pub fn set_user_email(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  id: String,
-  email: String,
+  user_id user_id: String,
+  email email: String,
 ) -> Result(User(user_metadata), Nil) {
   update_user(
     pevensie_auth,
-    id,
+    user_id,
     UserUpdate(..default_user_update(), email: Set(email)),
   )
 }
 
+/// Update a user's password.
+///
+/// If a password is provided, it will be hashed using Argon2 before being
+/// stored in the database. If no password is provided, the user's password
+/// will be set to `null`.
 pub fn set_user_password(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  id: String,
-  password: Option(String),
+  user_id user_id: String,
+  password password: Option(String),
 ) -> Result(User(user_metadata), Nil) {
   let password_hash_result = case password {
     None -> Ok(None)
@@ -239,19 +532,30 @@ pub fn set_user_password(
   use password_hash <- result.try(password_hash_result)
   update_user(
     pevensie_auth,
-    id,
+    user_id,
     UserUpdate(..default_user_update(), password_hash: Set(password_hash)),
   )
 }
 
 // ----- Session CRUD Functions ----- //
 
+/// Create a new session for a user. If IP address or user agent are provided,
+/// they will be stored alongside the session, and must be provided when
+/// fetching the session later.
+///
+/// You can optionally set a TTL for the session, which will cause the session
+/// to expire. Set `ttl_seconds` to `None` to never expire the session.
+///
+/// You can optionally delete any other active sessions for the user. This may
+/// be useful if you want to ensure that a user can only have one active
+/// session at a time.
 pub fn create_session(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  user_id: String,
-  ip: Option(IpAddress),
-  user_agent: Option(String),
-  ttl_seconds: Option(Int),
+  user_id user_id: String,
+  ip ip: Option(IpAddress),
+  user_agent user_agent: Option(String),
+  ttl_seconds ttl_seconds: Option(Int),
+  delete_other_sessions delete_other_sessions: Bool,
 ) -> Result(Session, Nil) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
@@ -261,22 +565,27 @@ pub fn create_session(
     ip,
     user_agent,
     ttl_seconds,
-    False,
+    delete_other_sessions,
   )
 }
 
+/// Fetch a session by ID. If IP address or user agent were provided when
+/// the session was created, they should be provided here as well.
 pub fn get_session(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  session_id: String,
+  session_id session_id: String,
+  ip ip: Option(IpAddress),
+  user_agent user_agent: Option(String),
 ) -> Result(Option(Session), Nil) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
-  driver.get_session(driver.driver, session_id, None, None)
+  driver.get_session(driver.driver, session_id, ip, user_agent)
 }
 
+/// Delete a session by ID.
 pub fn delete_session(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  session_id: String,
+  session_id session_id: String,
 ) -> Result(Nil, Nil) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
@@ -285,12 +594,19 @@ pub fn delete_session(
 
 // ----- User Authentication ----- //
 
+/// Log in a user using email and password.
+///
+/// Assuming credentials are valid, this function will create a new session
+/// for the user, and update the user's last sign in time.
+///
+/// Uses a session TTL of 24 hours, and does not delete any other sessions
+/// for the user.
 pub fn log_in_user(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  email: String,
-  password: String,
-  ip: Option(IpAddress),
-  user_agent: Option(String),
+  email email: String,
+  password password: String,
+  ip ip: Option(IpAddress),
+  user_agent user_agent: Option(String),
 ) -> Result(#(Session, User(user_metadata)), Nil) {
   use user <- result.try(get_user_by_email_and_password(
     pevensie_auth,
@@ -309,7 +625,14 @@ pub fn log_in_user(
     False,
   )
 
-  create_session(pevensie_auth, user.id, ip, user_agent, Some(24 * 60 * 60))
+  create_session(
+    pevensie_auth,
+    user.id,
+    ip,
+    user_agent,
+    Some(24 * 60 * 60),
+    False,
+  )
   |> result.map(fn(session) { #(session, user) })
 }
 
@@ -321,9 +644,10 @@ fn sha256_hash(data: String, key: String) -> Result(String, Nil) {
   Ok(crypto.sign_message(data, key, Sha256))
 }
 
-pub fn create_cookie(
+/// Create a signed cookie for a session.
+pub fn create_session_cookie(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  session: Session,
+  session session: Session,
 ) -> Result(String, Nil) {
   let PevensieAuth(cookie_key:, ..) = pevensie_auth
   io.println("Creating hash")
@@ -333,9 +657,11 @@ pub fn create_cookie(
 }
 
 // TODO: Improve errors
-pub fn verify_cookie(
+/// Verify a signed cookie for a session. Returns the session ID if the
+/// cookie is valid.
+pub fn verify_session_cookie(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-  cookie: String,
+  cookie cookie: String,
 ) -> Result(String, Nil) {
   let PevensieAuth(cookie_key:, ..) = pevensie_auth
   let cookie_parts = string.split(cookie, "|")

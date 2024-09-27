@@ -1,3 +1,182 @@
+//// The official PostgreSQL driver for Pevensie. It provides driver
+//// implementations for Pevensie modules to be used with Postgres
+//// databases.
+////
+//// Currently provides drivers for:
+////
+//// - [Pevensie Auth](/pevensie/auth.html)
+//// - [Pevensie Cache](/pevensie/cache.html)
+////
+//// ## Getting Started
+////
+//// Configure your driver to connect to your database using the
+//// [`PostgresConfig`](/pevensie/drivers/postgres.html#PostgresConfig)
+//// type. You can use the [`default_config`](/pevensie/drivers/postgres.html#default_config)
+//// function to get a default configuration for connecting to a local
+//// Postgres database with sensible concurrency defaults.
+////
+//// ```gleam
+//// import pevensie/drivers/postgres.{type PostgresConfig}
+////
+//// pub fn main() {
+////   let config = PostgresConfig(
+////     ..postgres.default_config(),
+////     host: "db.pevensie.dev",
+////     database: "my_database",
+////   )
+////   // ...
+//// }
+//// ```
+////
+//// Create a new driver using one of the `new_<driver>_driver` functions
+//// provided by this module. You can then use the driver with Pevensie
+//// modules.
+////
+//// ```gleam
+//// import pevensie/drivers/postgres.{type PostgresConfig}
+//// import pevensie/auth.{type PevensieAuth}
+////
+//// pub fn main() {
+////   let config = PostgresConfig(
+////     ..postgres.default_config(),
+////     host: "db.pevensie.dev",
+////     database: "my_database",
+////   )
+////   let driver = postgres.new_auth_driver(config)
+////   let pevensie_auth = auth.new(
+////     driver:,
+////     user_metadata_decoder:,
+////     user_metadata_encoder:,
+////     cookie_key: "super secret signing key",
+////   )
+////   // ...
+//// }
+//// ```
+////
+//// ## Connection Management
+////
+//// When called with the Postgres driver, the [`connect`](/pevensie/auth.html#connect) function
+//// provided by Pevensie Auth will create a connection pool for the database. This can be called
+//// once on boot, and will be reused for the lifetime of the application.
+////
+//// The [`disconnect`](/pevensie/auth.html#disconnect) function will close the connection pool.
+////
+//// ## Tables
+////
+//// This driver creates tables in the `pevensie` schema to store user
+//// data, sessions, and cache data.
+////
+//// The current tables created by this driver are:
+////
+//// | Table Name | Description |
+//// | ---------- | ----------- |
+//// | `cache` | Stores cache data. This table is unlogged, so data will be lost when the database stops. |
+//// | `session` | Stores session data. |
+//// | `user` | Stores user data. |
+//// | `version` | Stores the current versions of the tables required by this driver. Versions are stored as dates. |
+////
+//// ### Types
+////
+//// Generally, the Postgres driver makes a best effort to map the types
+//// used by Pevensie to best-practice Postgres types. Generally, columns
+//// are non-nullable unless the Gleam type is `Option(a)`. The following
+//// types are mapped to Postgres types:
+////
+//// | Gleam Type | Postgres Type |
+//// | ---------- | ------------- |
+//// | Any resource ID | `UUID` (generated as UUIDv7) |
+//// | `String` | `text` |
+//// | `birl.Time` | `timestamptz` |
+//// | Record types (e.g. `user_metadata`) | `jsonb` |
+//// | `pevensie/net.IpAddr` | `inet` |
+////
+//// ## Migrations
+////
+//// You can run migrations against your
+//// database using the provided CLI:
+////
+//// ```sh
+//// gleam run -m pevensie/drivers/postgres migrate -d <connection_string> auth,cache
+//// ```
+////
+//// The required SQL statements will be printed to the console. You can
+//// apply the migrations directly using the `--apply` flag.
+////
+//// See docs on the [`migrate`](/pevensie/drivers/postgres.html#migrate)
+//// function for more information.
+////
+//// ## Implementation Details
+////
+//// This driver uses the [gleam_pgo](https://github.com//pgo) library for interacting
+//// with Postgres.
+////
+//// All IDs are stored as UUIDs, and are generated using using a UUIDv7 implementation
+//// made available by [Fabio Lima](https://github.com/fabiolimace) under the MIT license.
+//// The implementation is available [here](https://gist.github.com/fabiolimace/515a0440e3e40efeb234e12644a6a346).
+////
+//// ### Pevensie Auth
+////
+//// The `user` table follows the structure of the [`User`](/pevensie/user.html#User)
+//// type. The `user_metadata` column is a JSONB column, and is used to store
+//// any custom user metadata.
+////
+//// It also contains a `deleted_at` column, which is used to mark users as deleted,
+//// rather than deleting the row from the database.
+////
+//// Alongside the primary key, the `user` table has unique indexes on the
+//// `email` and `phone_number` columns. These are partial, and only index
+//// where values are provided. They also include the `deleted_at` column,
+//// so users can sign up with the same email if a user with that email
+//// has been deleted.
+////
+//// The `session` table follows the structure of the [`Session`](/pevensie/session.html#Session)
+//// type. The `user_id` column is a foreign key referencing the `user` table. If
+//// an expired session is read, the `get_session` function will return `None`, and
+//// delete the expired session from the database.
+////
+//// #### Searching for users
+////
+//// The `list_users` function provided by Pevensie Auth allows you to search for users
+//// by ID, email or phone number. With the Postgres driver, the lists in you
+//// [`UserSearchFields`](/pevensie/user.html#UserSearchFields) argument are processed
+//// using a `like any()` where clause. This means that you can search for users
+//// by providing a list of values, and the driver will search for users with
+//// any of those values.
+////
+//// You can also use Postgres `like` wildcards in your search values. For example,
+//// if you search for users with an email ending in `@example.com`, you can use
+//// `%@example.com` as the search value.
+////
+//// ### Pevensie Cache
+////
+//// The `cache` table is an [`unlogged`](https://www.postgresql.org/docs/current/sql-createtable.html#SQL-CREATETABLE-UNLOGGED)
+//// table. This ensures that writes are fast, but data is lost when the database
+//// is stopped. Do not use Pevensie Cache for data you need to keep indefinitely.
+////
+//// The table's primary key is a composite of the `resource_type` and `key`
+//// columns. This allows you to store multiple values for a given key, and
+//// retrieve them all at once.
+////
+//// Writes to the cache will overwrite any existing value for the given
+//// resource type and key. This driver does not keep a version history.
+////
+//// If an expired value is read, the `get` function will return `None`, and
+//// delete the expired value from the cache.
+////
+//// ### Custom Queries
+////
+//// If you wish to query the `user` or `session` tables directly, this driver
+//// provides helper utilities for doing so.
+////
+//// The [`user_decoder`](/pevensie/drivers/postgres.html#user_decoder) and
+//// [`session_decoder`](/pevensie/drivers/postgres.html#session_decoder) functions
+//// can be used to decode selections from the `user` and `session` tables, respectively.
+////
+//// The [`user_select_fields`](/pevensie/drivers/postgres.html#user_select_fields)
+//// and [`session_select_fields`](/pevensie/drivers/postgres.html#session_select_fields)
+//// variables contain the SQL used to select fields from the `user` and `session`
+//// tables for use with the `user_decoder` and `session_decoder` functions.
+
 import birl.{type Time}
 import decode
 import gleam/dynamic.{
@@ -25,11 +204,30 @@ import pevensie/user.{
   type UserUpdate, Ignore, Set, User, app_metadata_encoder,
 }
 
+/// An IP version for a [`PostgresConfig`](#PostgresConfig).
 pub type IpVersion {
   Ipv4
   Ipv6
 }
 
+/// Configuration for connecting to a Postgres database.
+///
+/// Use the [`default_config`](/pevensie/drivers/postgres.html#default_config)
+/// function to get a default configuration for connecting to a local
+/// Postgres database with sensible concurrency defaults.
+///
+/// ```gleam
+/// import pevensie/drivers/postgres.{type PostgresConfig}
+///
+/// pub fn main() {
+///   let config = PostgresConfig(
+///     ..postgres.default_config(),
+///     host: "db.pevensie.dev",
+///     database: "my_database",
+///   )
+///   // ...
+/// }
+/// ```
 pub type PostgresConfig {
   PostgresConfig(
     host: String,
@@ -48,10 +246,29 @@ pub type PostgresConfig {
   )
 }
 
+/// The Postgres driver.
 pub opaque type Postgres {
   Postgres(config: pgo.Config, conn: Option(pgo.Connection))
 }
 
+/// Returns a default [`PostgresConfig`](#PostgresConfig) for connecting to a local
+/// Postgres database.
+///
+/// Can also be used to provide sensible concurrency defaults for connecting
+/// to a remote database.
+///
+/// ```gleam
+/// import pevensie/drivers/postgres.{type PostgresConfig}
+///
+/// pub fn main() {
+///   let config = PostgresConfig(
+///     ..postgres.default_config(),
+///     host: "db.pevensie.dev",
+///     database: "my_database",
+///   )
+///   // ...
+/// }
+/// ```
 pub fn default_config() -> PostgresConfig {
   PostgresConfig(
     host: "127.0.0.1",
@@ -91,6 +308,29 @@ fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
   )
 }
 
+/// Creates a new [`AuthDriver`](/pevensie/drivers/drivers.html#AuthDriver) for use with
+/// the [`pevensie/auth.new`](/pevensie/auth.html#new) function.
+///
+/// ```gleam
+/// import pevensie/drivers/postgres.{type PostgresConfig}
+/// import pevensie/auth.{type PevensieAuth}
+///
+/// pub fn main() {
+///   let config = PostgresConfig(
+///     ..postgres.default_config(),
+///     host: "db.pevensie.dev",
+///     database: "my_database",
+///   )
+///   let driver = postgres.new_auth_driver(config)
+///   let pevensie_auth = auth.new(
+///     driver:,
+///     user_metadata_decoder:,
+///     user_metadata_encoder:,
+///     cookie_key: "super secret signing key",
+///   )
+///   // ...
+/// }
+/// ```
 pub fn new_auth_driver(
   config: PostgresConfig,
 ) -> AuthDriver(Postgres, user_metadata) {
@@ -98,8 +338,8 @@ pub fn new_auth_driver(
     driver: Postgres(config |> postgres_config_to_pgo_config, None),
     connect: connect,
     disconnect: disconnect,
-    list_users: fn(driver, user_search_fields, decoder) {
-      list_users(driver, user_search_fields, decoder)
+    list_users: fn(driver, limit, offset, user_search_fields, decoder) {
+      list_users(driver, limit, offset, user_search_fields, decoder)
       // TODO: Handle errors
       |> result.map_error(fn(_err) { Nil })
     },
@@ -182,6 +422,7 @@ pub fn new_auth_driver(
   )
 }
 
+// Creates a new connection pool for the given Postgres driver.
 fn connect(driver: Postgres) -> Result(Postgres, Nil) {
   case driver {
     Postgres(config, None) -> {
@@ -193,6 +434,7 @@ fn connect(driver: Postgres) -> Result(Postgres, Nil) {
   }
 }
 
+// Closes the connection pool for the given Postgres driver.
 fn disconnect(driver: Postgres) -> Result(Postgres, Nil) {
   case driver {
     Postgres(config, Some(conn)) -> {
@@ -203,6 +445,8 @@ fn disconnect(driver: Postgres) -> Result(Postgres, Nil) {
   }
 }
 
+/// Errors that can occur when interacting with the Postgres driver.
+/// Will probably be removed or changed - haven't decided on the final API yet.
 pub type PostgresError {
   NotFound
   QueryError(PgoQueryError)
@@ -210,7 +454,8 @@ pub type PostgresError {
   InternalError(String)
 }
 
-const user_select_fields = "
+/// The SQL used to select fields from the `user` table.
+pub const user_select_fields = "
   id::text,
   -- Convert timestamp fields to UNIX epoch microseconds
   (extract(epoch from created_at) * 1000000)::bigint as created_at,
@@ -228,7 +473,9 @@ const user_select_fields = "
   (extract(epoch from banned_until) * 1000000)::bigint as banned_until
 "
 
-fn postgres_user_decoder(
+/// A decoder for the `user` table. Requires use of the
+/// [`user_select_fields`](#user_select_fields) when querying.
+pub fn user_decoder(
   user_metadata_decoder: Decoder(user_metadata),
 ) -> Decoder(User(user_metadata)) {
   fn(data) {
@@ -344,6 +591,8 @@ fn postgres_user_decoder(
 
 fn list_users(
   driver: Postgres,
+  limit: Int,
+  offset: Int,
   filters: UserSearchFields,
   using user_metadata_decoder: Decoder(user_metadata),
 ) -> Result(List(User(user_metadata)), PostgresError) {
@@ -368,20 +617,22 @@ fn list_users(
   let filter_sql =
     filter_fields
     |> list.map(pair.first)
-    |> string.join(" and ")
+    |> string.join(" or ")
 
   let sql = "
     select
       " <> user_select_fields <> "
     from pevensie.\"user\"
-    where " <> filter_sql <> " and deleted_at is null"
+    where " <> filter_sql <> " and deleted_at is null
+    limit " <> int.to_string(limit) <> "
+    offset " <> int.to_string(offset)
 
   let query_result =
     pgo.execute(
       sql,
       conn,
       filter_fields |> list.map(pair.second),
-      postgres_user_decoder(user_metadata_decoder),
+      user_decoder(user_metadata_decoder),
     )
     |> result.map_error(QueryError)
 
@@ -439,7 +690,7 @@ fn insert_user(
         pgo.text(app_metadata_encoder(user.app_metadata) |> json.to_string),
         pgo.text(user_metadata_encoder(user.user_metadata) |> json.to_string),
       ],
-      postgres_user_decoder(user_metadata_decoder),
+      user_decoder(user_metadata_decoder),
     )
     // TODO: Handle errors
     |> result.map_error(QueryError)
@@ -564,7 +815,7 @@ fn update_user(
       sql,
       conn,
       list.append(update_values, [pgo.text(value)]),
-      postgres_user_decoder(user_metadata_decoder),
+      user_decoder(user_metadata_decoder),
     )
     // TODO: Handle errors
     |> result.map_error(QueryError)
@@ -596,7 +847,7 @@ fn delete_user(
       sql,
       conn,
       [pgo.text(value)],
-      postgres_user_decoder(user_metadata_decoder),
+      user_decoder(user_metadata_decoder),
     )
     // TODO: Handle errors
     |> result.map_error(QueryError)
@@ -609,7 +860,8 @@ fn delete_user(
   }
 }
 
-const session_select_fields = "
+/// The SQL used to select fields from the `session` table.
+pub const session_select_fields = "
   id::text,
   user_id::text,
   (extract(epoch from created_at) * 1000000)::bigint as created_at,
@@ -618,7 +870,9 @@ const session_select_fields = "
   user_agent
 "
 
-fn postgres_session_decoder() -> Decoder(Session) {
+/// A decoder for the `session` table. Requires use of the
+/// [`session_select_fields`](#session_select_fields) when querying.
+pub fn session_decoder() -> Decoder(Session) {
   fn(data) {
     io.debug(data)
     decode.into({
@@ -665,7 +919,7 @@ fn postgres_session_decoder() -> Decoder(Session) {
   }
 }
 
-pub fn get_session(
+fn get_session(
   driver: Postgres,
   session_id: String,
   ip: Option(IpAddress),
@@ -675,7 +929,10 @@ pub fn get_session(
 
   let sql = "
     select
-      " <> session_select_fields <> "
+      " <> session_select_fields <> ",
+      -- Returns true only if the exporation time is
+      -- set and has passed
+      (expires_at is not null and expires_at < now()) as expired
     from pevensie.\"session\"
     where id = $1
     "
@@ -711,7 +968,11 @@ pub fn get_session(
         pgo.nullable(pgo.text, ip |> option.map(net.format_ip_address)),
         pgo.nullable(pgo.text, user_agent),
       ],
-      postgres_session_decoder(),
+      dynamic.decode2(
+        fn(session, expired) { #(session, expired) },
+        session_decoder(),
+        dynamic.element(1, dynamic.bool),
+      ),
     )
     // TODO: Handle errors
     |> result.map_error(QueryError)
@@ -719,11 +980,19 @@ pub fn get_session(
   use response <- result.try(query_result)
   case response.rows {
     [] -> Ok(None)
-    [session] -> Ok(Some(session))
+    // If no expiration is set, the value is valid forever
+    [#(session, False)] -> Ok(Some(session))
+    // If the value has expired, return None and delete the session
+    // in an async task
+    [#(_, True)] -> {
+      process.start(fn() { delete_session(driver, session_id) }, False)
+      Ok(None)
+    }
     _ -> Error(InternalError("Unexpected number of rows returned"))
   }
 }
 
+// > Note: thir may become part of the public driver API in the future
 fn delete_sessions_for_user(
   driver: Postgres,
   user_id: String,
@@ -754,7 +1023,7 @@ fn delete_sessions_for_user(
   }
 }
 
-pub fn create_session(
+fn create_session(
   driver: Postgres,
   user_id: String,
   ip: Option(IpAddress),
@@ -808,7 +1077,7 @@ pub fn create_session(
         // pgo.nullable(pgo.text, ip |> option.map(net.format_ip_address)),
         pgo.nullable(pgo.text, user_agent),
       ],
-      postgres_session_decoder(),
+      session_decoder(),
     )
     // TODO: Handle errors
     |> result.map_error(QueryError)
@@ -833,7 +1102,7 @@ pub fn create_session(
   }
 }
 
-pub fn delete_session(
+fn delete_session(
   driver: Postgres,
   session_id: String,
 ) -> Result(Nil, PostgresError) {
@@ -857,6 +1126,24 @@ pub fn delete_session(
   }
 }
 
+/// Creates a new [`CacheDriver`](/pevensie/drivers/drivers.html#CacheDriver) for use with
+/// the [`pevensie/cache.new`](/pevensie/cache.html#new) function.
+///
+/// ```gleam
+/// import pevensie/drivers/postgres.{type PostgresConfig}
+/// import pevensie/cache.{type PevensieCache}
+///
+/// pub fn main() {
+///   let config = PostgresConfig(
+///     ..postgres.default_config(),
+///     host: "db.pevensie.dev",
+///     database: "my_database",
+///   )
+///   let driver = postgres.new_cache_driver(config)
+///   let pevensie_cache = cache.new(driver)
+///   // ...
+/// }
+/// ```
 pub fn new_cache_driver(config: PostgresConfig) -> CacheDriver(Postgres) {
   CacheDriver(
     driver: Postgres(config |> postgres_config_to_pgo_config, None),

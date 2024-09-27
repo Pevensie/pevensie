@@ -45,8 +45,11 @@ pub type AuthDriver(driver, user_metadata) {
 }
 
 /// A function that retrieves users based on the given search fields.
+/// The first `Int` argument is the number of users to limit the search to,
+/// the second `Int` argument is the offset to use, and the `UserSearchFields`
+/// argument is the search fields to use.
 type ListUsersFunction(auth_driver, user_metadata) =
-  fn(auth_driver, UserSearchFields, Decoder(user_metadata)) ->
+  fn(auth_driver, Int, Int, UserSearchFields, Decoder(user_metadata)) ->
     Result(List(User(user_metadata)), Nil)
 
 /// A function that updates a user by the given field and value.
