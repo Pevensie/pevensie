@@ -97,7 +97,7 @@
 //// database using the provided CLI:
 ////
 //// ```sh
-//// gleam run -m pevensie/drivers/postgres migrate -d <connection_string> auth,cache
+//// gleam run -m pevensie/drivers/postgres migrate <connection_string> --modules=auth,cache
 //// ```
 ////
 //// The required SQL statements will be printed to the console. You can
@@ -178,24 +178,31 @@
 //// variables contain the SQL used to select fields from the `user` and `session`
 //// tables for use with the `user_decoder` and `session_decoder` functions.
 
+import argv
 import birl.{type Time}
 import decode
+import filepath
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic.{
   type DecodeErrors as DynamicDecodeErrors, type Decoder,
   DecodeError as DynamicDecodeError,
 }
+import gleam/erlang
 import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/pair
 import gleam/pgo.{type QueryError as PgoQueryError}
 import gleam/result
+import gleam/set
 import gleam/string
+import glint
+import glint/constraint
 import pevensie/auth.{
   type AuthDriver, type OneTimeTokenType, AuthDriver, PasswordReset,
 }
@@ -207,6 +214,8 @@ import pevensie/user.{
   type UpdateField, type User, type UserInsert, type UserSearchFields,
   type UserUpdate, Ignore, Set, User, app_metadata_encoder,
 }
+import simplifile
+import snag
 
 /// An IP version for a [`PostgresConfig`](#PostgresConfig).
 pub type IpVersion {
@@ -912,7 +921,6 @@ pub const session_select_fields = "
 /// [`session_select_fields`](#session_select_fields) when querying.
 pub fn session_decoder() -> Decoder(Session) {
   fn(data) {
-    io.debug(data)
     decode.into({
       use id <- decode.parameter
       use user_id <- decode.parameter
@@ -1087,9 +1095,7 @@ fn create_session(
     Some(ip) -> "'" <> net.format_ip_address(ip) <> "'::inet"
   }
 
-  let _ =
-    net.parse_ip_address("127.0.0.1")
-    |> io.debug
+  let _ = net.parse_ip_address("127.0.0.1")
 
   let sql = "
     insert into pevensie.\"session\" (
@@ -1515,4 +1521,326 @@ fn delete_from_cache(
     Ok(_) -> Ok(Nil)
     Error(err) -> Error(err)
   }
+}
+
+// ----- Migration function ----- //
+fn modules_flag() -> glint.Flag(List(String)) {
+  glint.strings_flag("modules")
+  |> glint.flag_help("The Pevensie modules to migrate")
+  |> glint.flag_constraint(
+    constraint.one_of(["auth", "cache"]) |> constraint.each,
+  )
+}
+
+fn add_error_context(error: String, context: String) {
+  context <> ": " <> error
+}
+
+fn check_pevensie_schema_exists(tx: pgo.Connection) -> Result(Bool, String) {
+  let query_result =
+    pgo.execute(
+      "select schema_name from information_schema.schemata where schema_name = 'pevensie'",
+      tx,
+      [],
+      dynamic.element(0, of: dynamic.string),
+    )
+    |> result.map_error(string.inspect)
+
+  use response <- result.try(query_result)
+  case response.rows {
+    [_] -> Ok(True)
+    [] -> Ok(False)
+    _ -> Error("Too many rows")
+  }
+}
+
+fn get_module_version(
+  tx: pgo.Connection,
+  module: String,
+) -> Result(Option(String), String) {
+  let query_result =
+    pgo.execute(
+      // pgo no like enums
+      "select version::text from pevensie.module_version where module = '"
+        <> module
+        <> "' limit 1",
+      tx,
+      [],
+      dynamic.element(0, of: dynamic.string),
+    )
+    |> result.map_error(string.inspect)
+
+  use response <- result.try(query_result)
+  case response.rows {
+    [] -> Ok(None)
+    [version] -> Ok(Some(version))
+    _ -> Error("Too many rows")
+  }
+}
+
+fn get_migrations_for_module(module: String) -> Result(List(String), String) {
+  use priv <- result.try(
+    erlang.priv_directory("pevensie")
+    |> result.replace_error("Couldn't get priv directory"),
+  )
+
+  let assert Ok(directory) =
+    [priv, "drivers", "postgres", "migrations", module]
+    |> list.reduce(filepath.join)
+
+  simplifile.get_files(directory)
+  |> result.map_error(fn(err) {
+    err
+    |> string.inspect
+    |> add_error_context("Unable to get files in priv directory")
+  })
+}
+
+fn version_from_filename(filename: String) {
+  let assert Ok(filename) = filename |> filepath.split |> list.last
+  string.replace(filename, ".sql", "")
+}
+
+fn get_migrations_to_apply_for_module(
+  module: String,
+  current_version: Option(String),
+) -> Result(List(String), String) {
+  use files <- result.try(
+    get_migrations_for_module(module)
+    |> result.map_error(add_error_context(
+      _,
+      "Failed to get migrations for '" <> module <> "' module",
+    )),
+  )
+
+  case current_version {
+    None -> Ok(files)
+    Some(current_version) -> {
+      files
+      |> list.filter(fn(file) {
+        string.compare(version_from_filename(file), current_version) == order.Gt
+      })
+      |> Ok
+    }
+  }
+}
+
+fn apply_migrations_for_module(
+  tx: pgo.Connection,
+  module: String,
+  migrations: List(String),
+) -> Result(Nil, String) {
+  let num_migrations = list.length(migrations)
+
+  case num_migrations {
+    0 -> {
+      io.println("No migrations to apply for module '" <> module <> "'\n")
+      Ok(Nil)
+    }
+    _ -> {
+      io.println(
+        "Applying "
+        <> int.to_string(num_migrations)
+        <> " migrations for module '"
+        <> module
+        <> "'",
+      )
+      let migration_result =
+        migrations
+        |> list.try_each(fn(migration) {
+          io.print("Applying " <> version_from_filename(migration) <> ".sql...")
+          use sql <- result.try(
+            simplifile.read(migration)
+            |> result.map_error(fn(err) {
+              err
+              |> string.inspect
+              |> add_error_context("Unable to apply migration " <> migration)
+            }),
+          )
+          use last_char <- result.try(
+            string.last(sql |> string.trim_right)
+            |> result.replace_error("Empty migratino file"),
+          )
+
+          let sql = case last_char {
+            ";" -> sql
+            _ -> sql <> ";"
+          }
+          // pgo doesn't allow executing multiple statements, so
+          // wrap in a do block
+          let sql =
+            "do $pevensiemigration$ begin" <> sql <> " end;$pevensiemigration$"
+
+          let query_result =
+            pgo.execute(sql, tx, [], fn(_) { Ok(Nil) })
+            |> result.map_error(string.inspect)
+
+          use _ <- result.try(query_result)
+          io.println("ok.")
+          Ok(Nil)
+        })
+
+      use _ <- result.try(migration_result)
+      let assert Ok(latest_migration) = list.last(migrations)
+      let new_version = version_from_filename(latest_migration)
+      let assert [Ok(y), Ok(m), Ok(d)] =
+        new_version |> string.split("-") |> list.map(int.parse)
+      let new_version_date = #(y, m, d)
+
+      io.print(
+        "Updating module '" <> module <> "' version to " <> new_version <> "...",
+      )
+      let query_result =
+        // pgo doesn't like enums, so insert it manually
+        pgo.execute("
+          insert into pevensie.module_version (module, version)
+          values ('" <> module <> "', $1)
+          on conflict (module)
+          do update set version = $2
+          ", tx, [pgo.date(new_version_date), pgo.date(new_version_date)], dynamic.dynamic)
+        |> result.map_error(string.inspect)
+
+      use _ <- result.try(query_result)
+      io.println("ok.")
+      io.println("Done applying migrations for module '" <> module <> "'\n")
+      Ok(Nil)
+    }
+  }
+}
+
+fn handle_base_migration(tx: pgo.Connection) -> Result(Nil, String) {
+  io.print("Checking schema... ")
+  use schema_exists <- result.try(
+    check_pevensie_schema_exists(tx)
+    |> result.map_error(add_error_context(
+      _,
+      "Unable to check if 'pevensie' schema exists",
+    )),
+  )
+  io.println("ok.")
+
+  io.print("Checking current version of 'base' module... ")
+  let base_version_result = case schema_exists {
+    False -> Ok(None)
+    True ->
+      get_module_version(tx, "base")
+      |> result.map_error(add_error_context(
+        _,
+        "Unable to check 'base' module version",
+      ))
+  }
+
+  use current_base_version <- result.try(base_version_result)
+  io.println(
+    "ok. Current version: " <> current_base_version |> option.unwrap("none"),
+  )
+
+  io.print("Getting migrations for module 'base'... ")
+  use base_migrations <- result.try(
+    get_migrations_to_apply_for_module("base", current_base_version)
+    |> result.map_error(add_error_context(
+      _,
+      "Failed to get migrations to apply for 'base'",
+    )),
+  )
+  io.println("ok.")
+
+  apply_migrations_for_module(tx, "base", base_migrations)
+  |> result.map_error(add_error_context(
+    _,
+    "Failed to apply migrations for 'base'",
+  ))
+}
+
+fn handle_module_migration(
+  tx: pgo.Connection,
+  module: String,
+) -> Result(Nil, String) {
+  io.print("Checking current version of '" <> module <> "' module... ")
+  use current_version <- result.try(
+    get_module_version(tx, module)
+    |> result.map_error(add_error_context(
+      _,
+      "Unable to check '" <> module <> "' module version",
+    )),
+  )
+
+  io.println(
+    "ok. Current version: " <> current_version |> option.unwrap("none"),
+  )
+
+  io.print("Getting migrations for module '" <> module <> "'... ")
+  use migrations <- result.try(
+    get_migrations_to_apply_for_module(module, current_version)
+    |> result.map_error(add_error_context(
+      _,
+      "Failed to get migrations to apply for '" <> module <> "'",
+    )),
+  )
+  io.println("ok.")
+
+  apply_migrations_for_module(tx, module, migrations)
+  |> result.map_error(add_error_context(
+    _,
+    "Failed to apply migrations for '" <> module <> "'",
+  ))
+}
+
+fn migrate_command() {
+  use connection_string_arg <- glint.named_arg("connection string")
+  use modules_arg <- glint.flag(modules_flag())
+
+  use named, _, flags <- glint.command()
+  let connection_string = connection_string_arg(named)
+  use modules <- result.try(modules_arg(flags))
+  // Deduplicate modules
+  let modules = modules |> set.from_list |> set.to_list
+
+  use config <- result.try(
+    pgo.url_config(connection_string)
+    |> result.replace_error(
+      snag.Snag(issue: "Invalid Postgres connection string", cause: [
+        "invalid connection string",
+      ]),
+    ),
+  )
+  let conn = pgo.connect(config)
+  let transaction_result =
+    pgo.transaction(conn, fn(tx) {
+      use _ <- result.try(handle_base_migration(tx))
+
+      let migration_result =
+        modules
+        |> list.try_each(handle_module_migration(tx, _))
+
+      use _ <- result.try(migration_result)
+      io.println(
+        "\nSuccess! Applied migrations for modules: "
+        <> modules |> string.join(","),
+      )
+      Ok(Nil)
+    })
+  case transaction_result {
+    Ok(_) -> Ok(Nil)
+    Error(pgo.TransactionRolledBack(msg)) ->
+      Error(snag.Snag(issue: msg, cause: ["transaction rolled back"]))
+    Error(pgo.TransactionQueryError(err)) ->
+      Error(
+        snag.Snag(issue: "Query error: " <> string.inspect(err), cause: [
+          "query error",
+        ]),
+      )
+  }
+}
+
+pub fn main() {
+  let cli =
+    glint.new()
+    |> glint.with_name("pevensie/drivers/postgres")
+    |> glint.pretty_help(glint.default_pretty_help())
+    |> glint.add(at: ["migrate"], do: migrate_command())
+
+  use cli_result <- glint.run_and_handle(cli, argv.load().arguments)
+  use errors <- result.map_error(cli_result)
+  io.println("Command failed with an error: " <> errors.issue)
 }
