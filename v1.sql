@@ -1,14 +1,14 @@
-create or replace function uuid7()
+create or replace function pevensie.uuid7()
 returns uuid
 as $$
 declare
 begin
-	return uuid7(clock_timestamp());
+	return pevensie.uuid7(clock_timestamp());
 end $$
 language plpgsql
 ;
 
-create or replace function uuid7(p_timestamp timestamp with time zone)
+create or replace function pevensie.uuid7(p_timestamp timestamp with time zone)
 returns uuid
 as $$
 declare
@@ -52,7 +52,7 @@ create schema if not exists pevensie;
 
 -- user
 create table if not exists pevensie."user" (
-  id uuid not null default uuid7() primary key,
+  id uuid not null default pevensie.uuid7() primary key,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
@@ -73,7 +73,7 @@ create unique index user_phone_number_unique_idx on pevensie."user" (phone_numbe
 
 -- session
 create table if not exists pevensie."session" (
-  id uuid not null default uuid7() primary key,
+  id uuid not null default pevensie.uuid7() primary key,
   created_at timestamptz not null default now(),
   expires_at timestamptz,
   user_id uuid not null references pevensie."user"(id),
@@ -88,4 +88,37 @@ create unlogged table if not exists pevensie."cache" (
   value text not null,
   expires_at timestamptz,
   primary key (resource_type, key)
+);
+
+-- one_time_token
+-- TODO: see if we can do 'if not exists'
+create type pevensie."one_time_token_type" as (
+  'password-reset'
+);
+
+create table if not exists pevensie."one_time_token" (
+  id uuid not null default pevensie.uuid7() primary key,
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz,
+  expires_at timestamptz not null,
+  used_at timestamptz,
+  token_type pevensie."one_time_token_type" not null,
+  user_id uuid not null references pevensie."user" (id),
+  token_hash text not null check (char_length(token_hash) > 0)
+);
+
+create index if not exists one_time_token_token_hash_idx on pevensie."one_time_token" using hash (token_hash);
+create unique index one_time_token_user_id_token_type_unique_idx on pevensie."one_time_token" (user_id, token_type, deleted_at) nulls not distinct;
+
+-- module_version
+-- TODO: see if we can do 'if not exists'
+create type pevensie."module" as enum (
+  'base',
+  'auth',
+  'cache'
+);
+
+create table if not exists pevensie."module_version" (
+  module pevensie."module" not null primary key,
+  version date not null
 );

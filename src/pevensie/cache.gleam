@@ -65,7 +65,8 @@
 import gleam/option.{type Option}
 import gleam/result
 import pevensie/drivers.{
-  type CacheDriver, type Connected, type Disconnected, CacheDriver,
+  type ConnectFunction, type Connected, type DisconnectFunction,
+  type Disconnected,
 }
 
 // ----- PevensieCache ----- //
@@ -219,3 +220,25 @@ pub fn delete(
 
   driver.delete(driver.driver, resource_type, key)
 }
+
+// ----- Cache Driver ----- //
+
+pub type CacheDriver(driver) {
+  CacheDriver(
+    driver: driver,
+    connect: ConnectFunction(driver),
+    disconnect: DisconnectFunction(driver),
+    store: CacheStoreFunction(driver),
+    get: CacheGetFunction(driver),
+    delete: CacheDeleteFunction(driver),
+  )
+}
+
+type CacheStoreFunction(cache_driver) =
+  fn(cache_driver, String, String, String, Option(Int)) -> Result(Nil, Nil)
+
+type CacheGetFunction(cache_driver) =
+  fn(cache_driver, String, String) -> Result(Option(String), Nil)
+
+type CacheDeleteFunction(cache_driver) =
+  fn(cache_driver, String, String) -> Result(Nil, Nil)

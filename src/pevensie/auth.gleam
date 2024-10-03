@@ -174,8 +174,6 @@
 
 import argus
 import birl
-import gleam/bit_array
-import gleam/crypto.{Sha256}
 import gleam/dict
 import gleam/dynamic.{type Decoder}
 import gleam/erlang/process
@@ -184,14 +182,16 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import pevensie/drivers.{
-  type AuthDriver, type Connected, type Disconnected, AuthDriver,
+  type ConnectFunction, type Connected, type DisconnectFunction,
+  type Disconnected,
 }
-import pevensie/internal/encoder.{type Encoder}
+import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
 import pevensie/session.{type Session}
 import pevensie/user.{
-  type User, type UserSearchFields, type UserUpdate, Set, UserInsert,
-  UserSearchFields, UserUpdate, default_user_search_fields, default_user_update,
+  type User, type UserInsert, type UserSearchFields, type UserUpdate, Set,
+  UserInsert, UserSearchFields, UserUpdate, default_user_search_fields,
+  default_user_update,
 }
 
 // ----- PevensieAuth ----- //
@@ -638,12 +638,6 @@ pub fn log_in_user(
 
 // ----- Cookies ----- //
 
-fn sha256_hash(data: String, key: String) -> Result(String, Nil) {
-  let key = bit_array.from_string(key)
-  let data = bit_array.from_string(data)
-  Ok(crypto.sign_message(data, key, Sha256))
-}
-
 /// Create a signed cookie for a session.
 pub fn create_session_cookie(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
@@ -651,15 +645,15 @@ pub fn create_session_cookie(
 ) -> Result(String, Nil) {
   let PevensieAuth(cookie_key:, ..) = pevensie_auth
   io.println("Creating hash")
-  use hash <- result.try(sha256_hash(session.id, cookie_key))
+  use hash <- result.try(encode.sha256_hash(session.id, cookie_key))
   io.println("Hash created")
   Ok(session.id <> "|" <> hash)
 }
 
 // TODO: Improve errors
-/// Verify a signed cookie for a session. Returns the session ID if the
+/// Validate a signed cookie for a session. Returns the session ID if the
 /// cookie is valid.
-pub fn verify_session_cookie(
+pub fn validate_session_cookie(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   cookie cookie: String,
 ) -> Result(String, Nil) {
@@ -667,7 +661,7 @@ pub fn verify_session_cookie(
   let cookie_parts = string.split(cookie, "|")
   case cookie_parts {
     [session_id, hash_string] -> {
-      use new_hash <- result.try(sha256_hash(session_id, cookie_key))
+      use new_hash <- result.try(encode.sha256_hash(session_id, cookie_key))
       case new_hash == hash_string {
         True -> Ok(session_id)
         False -> Error(Nil)
@@ -676,3 +670,181 @@ pub fn verify_session_cookie(
     _ -> Error(Nil)
   }
 }
+
+pub type OneTimeTokenType {
+  PasswordReset
+}
+
+pub fn create_one_time_token(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  user_id user_id: String,
+  token_type token_type: OneTimeTokenType,
+) -> Result(String, Nil) {
+  let PevensieAuth(driver:, ..) = pevensie_auth
+
+  driver.create_one_time_token(driver.driver, user_id, token_type)
+}
+
+pub fn validate_one_time_token(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  user_id user_id: String,
+  token_type token_type: OneTimeTokenType,
+  token token: String,
+) -> Result(Nil, Nil) {
+  let PevensieAuth(driver:, ..) = pevensie_auth
+
+  driver.validate_one_time_token(driver.driver, user_id, token_type, token)
+}
+
+pub fn use_one_time_token(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  user_id user_id: String,
+  token_type token_type: OneTimeTokenType,
+  token token: String,
+) -> Result(Nil, Nil) {
+  let PevensieAuth(driver:, ..) = pevensie_auth
+
+  driver.use_one_time_token(driver.driver, user_id, token_type, token)
+}
+
+pub fn delete_one_time_token(
+  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  user_id user_id: String,
+  token_type token_type: OneTimeTokenType,
+  token token: String,
+) -> Result(Nil, Nil) {
+  let PevensieAuth(driver:, ..) = pevensie_auth
+
+  driver.delete_one_time_token(driver.driver, user_id, token_type, token)
+}
+
+// ----- Auth Driver ----- //
+
+pub type AuthDriver(driver, user_metadata) {
+  AuthDriver(
+    driver: driver,
+    connect: ConnectFunction(driver),
+    disconnect: DisconnectFunction(driver),
+    list_users: ListUsersFunction(driver, user_metadata),
+    insert_user: InsertUserFunction(driver, user_metadata),
+    update_user: UpdateUserFunction(driver, user_metadata),
+    delete_user: DeleteUserFunction(driver, user_metadata),
+    get_session: GetSessionFunction(driver),
+    create_session: CreateSessionFunction(driver),
+    delete_session: DeleteSessionFunction(driver),
+    create_one_time_token: CreateOneTimeTokenFunction(driver),
+    validate_one_time_token: ValidateOneTimeTokenFunction(driver),
+    use_one_time_token: UseOneTimeTokenFunction(driver),
+    delete_one_time_token: DeleteOneTimeTokenFunction(driver),
+  )
+}
+
+/// A function that retrieves users based on the given search fields.
+/// The first `Int` argument is the number of users to limit the search to,
+/// the second `Int` argument is the offset to use, and the `UserSearchFields`
+/// argument is the search fields to use.
+type ListUsersFunction(auth_driver, user_metadata) =
+  fn(auth_driver, Int, Int, UserSearchFields, Decoder(user_metadata)) ->
+    Result(List(User(user_metadata)), Nil)
+
+/// A function that updates a user by the given field and value.
+/// The first string argument is the field to update, the second
+/// string argument is the value to update it to, and the third
+/// argument is the user update to apply.
+type UpdateUserFunction(auth_driver, user_metadata) =
+  fn(
+    auth_driver,
+    String,
+    String,
+    UserUpdate(user_metadata),
+    Decoder(user_metadata),
+    Encoder(user_metadata),
+  ) ->
+    Result(User(user_metadata), Nil)
+
+/// A function that inserts a user into the database.
+/// The first argument is the user to insert, the second
+/// argument is the decoder to use to decode the user metadata,
+/// and the third argument is the encoder to use to encode the
+/// user metadata.
+type InsertUserFunction(auth_driver, user_metadata) =
+  fn(
+    auth_driver,
+    UserInsert(user_metadata),
+    Decoder(user_metadata),
+    Encoder(user_metadata),
+  ) ->
+    Result(User(user_metadata), Nil)
+
+/// A function that deletes a user from the database.
+/// The first string argument is the field to delete by, and the
+/// second string argument is the value to delete it by.
+type DeleteUserFunction(auth_driver, user_metadata) =
+  fn(auth_driver, String, String, Decoder(user_metadata)) ->
+    Result(User(user_metadata), Nil)
+
+/// A function that gets a session by ID.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - session_id: The ID of the session to get.
+///   - ip: The IP address of the user.
+///   - user_agent: The user agent of the user.
+type GetSessionFunction(auth_driver) =
+  fn(auth_driver, String, Option(IpAddress), Option(String)) ->
+    Result(Option(Session), Nil)
+
+/// A function that creates a new session for a user.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - user_id: The ID of the user to create a session for.
+///   - ip: The IP address of the user.
+///   - user_agent: The user agent of the user.
+///   - ttl_seconds: The number of seconds the session should last for.
+///   - delete_other_sessions: Whether to delete any other sessions for the user.
+type CreateSessionFunction(auth_driver) =
+  fn(auth_driver, String, Option(IpAddress), Option(String), Option(Int), Bool) ->
+    Result(Session, Nil)
+
+/// A function that deletes a session by ID.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - session_id: The ID of the session to delete.
+type DeleteSessionFunction(auth_driver) =
+  fn(auth_driver, String) -> Result(Nil, Nil)
+
+/// A function that creates a one time token.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - user_id: The ID of the user to create the token for.
+///   - token_type: The type of token to create.
+///
+/// Returns: the token
+type CreateOneTimeTokenFunction(auth_driver) =
+  fn(auth_driver, String, OneTimeTokenType) -> Result(String, Nil)
+
+/// A function that checks if a one time token is still active.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - user_id: The ID of the user to check the token for.
+///   - token_type: The type of token to create.
+///   - token: The token to check.
+type ValidateOneTimeTokenFunction(auth_driver) =
+  fn(auth_driver, String, OneTimeTokenType, String) -> Result(Nil, Nil)
+
+/// A function that uses a one time token, erroring if invalid.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - user_id: The ID of the user using the token.
+///   - token_type: The type of token to use.
+///   - token: The token to check.
+type UseOneTimeTokenFunction(auth_driver) =
+  fn(auth_driver, String, OneTimeTokenType, String) -> Result(Nil, Nil)
+
+/// A function that deletes a one time token.
+/// Args:
+///   - auth_driver: The auth driver to use.
+///   - user_id: The ID of the user to delete the token for.
+///   - token_type: The type of token to delete.
+///   - token: The token to delete.
+type DeleteOneTimeTokenFunction(auth_driver) =
+  fn(auth_driver, String, OneTimeTokenType, String) -> Result(Nil, Nil)

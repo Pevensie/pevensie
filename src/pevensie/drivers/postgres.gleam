@@ -71,9 +71,10 @@
 //// | Table Name | Description |
 //// | ---------- | ----------- |
 //// | `cache` | Stores cache data. This table is unlogged, so data will be lost when the database stops. |
+//// | `one_time_token` | Stores one time tokens. Uses soft deletions. |
 //// | `session` | Stores session data. |
-//// | `user` | Stores user data. |
-//// | `version` | Stores the current versions of the tables required by this driver. Versions are stored as dates. |
+//// | `user` | Stores user data. Uses soft deletions. |
+//// | `module_version` | Stores the current versions of the tables required by this driver. Versions are stored as dates. |
 ////
 //// ### Types
 ////
@@ -179,6 +180,8 @@
 
 import birl.{type Time}
 import decode
+import gleam/bit_array
+import gleam/crypto
 import gleam/dynamic.{
   type DecodeErrors as DynamicDecodeErrors, type Decoder,
   DecodeError as DynamicDecodeError,
@@ -193,10 +196,11 @@ import gleam/pair
 import gleam/pgo.{type QueryError as PgoQueryError}
 import gleam/result
 import gleam/string
-import pevensie/drivers.{
-  type AuthDriver, type CacheDriver, AuthDriver, CacheDriver,
+import pevensie/auth.{
+  type AuthDriver, type OneTimeTokenType, AuthDriver, PasswordReset,
 }
-import pevensie/internal/encoder.{type Encoder}
+import pevensie/cache.{type CacheDriver, CacheDriver}
+import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
 import pevensie/session.{type Session, Session}
 import pevensie/user.{
@@ -308,6 +312,8 @@ fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
   )
 }
 
+// ----- Auth Driver ----- //
+
 /// Creates a new [`AuthDriver`](/pevensie/drivers/drivers.html#AuthDriver) for use with
 /// the [`pevensie/auth.new`](/pevensie/auth.html#new) function.
 ///
@@ -413,6 +419,38 @@ pub fn new_auth_driver(
     },
     delete_session: fn(driver, session_id) {
       delete_session(driver, session_id)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+    create_one_time_token: fn(driver, user_id, token_type) {
+      create_one_time_token(driver, user_id, token_type)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+    validate_one_time_token: fn(driver, user_id, token_type, token) {
+      validate_one_time_token(driver, user_id, token_type, token)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+    use_one_time_token: fn(driver, user_id, token_type, token) {
+      use_one_time_token(driver, user_id, token_type, token)
+      // TODO: Handle errors
+      |> result.map_error(fn(err) {
+        io.debug(err)
+        Nil
+      })
+    },
+    delete_one_time_token: fn(driver, user_id, token_type, token) {
+      delete_one_time_token(driver, user_id, token_type, token)
       // TODO: Handle errors
       |> result.map_error(fn(err) {
         io.debug(err)
@@ -1113,7 +1151,7 @@ fn delete_session(
     delete from pevensie.\"session\"
     where id = $1
     returning id
-  "
+      "
 
   let query_result =
     pgo.execute(sql, conn, [pgo.text(session_id)], fn(_) { Ok(json.null()) })
@@ -1125,6 +1163,190 @@ fn delete_session(
     Error(err) -> Error(err)
   }
 }
+
+fn one_time_token_type_to_prefix(token_type: OneTimeTokenType) -> String {
+  case token_type {
+    PasswordReset -> "pr"
+  }
+}
+
+fn one_time_token_type_to_pg_enum(token_type: OneTimeTokenType) -> String {
+  case token_type {
+    PasswordReset -> "password-reset"
+  }
+}
+
+fn create_one_time_token(
+  driver: Postgres,
+  user_id: String,
+  token_type: OneTimeTokenType,
+) -> Result(String, PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  let token =
+    one_time_token_type_to_prefix(token_type)
+    <> { crypto.strong_random_bytes(36) |> bit_array.base64_encode(True) }
+  use token_hash <- result.try(
+    encode.sha256_hash(token, token)
+    |> result.replace_error(InternalError("Failed to hash token")),
+  )
+
+  let sql =
+    "
+  insert into pevensie.one_time_token (user_id, token_type, token_hash)
+  values ($1, $2, $3)
+    "
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [
+        pgo.text(user_id),
+        pgo.text(one_time_token_type_to_pg_enum(token_type)),
+        pgo.text(token_hash),
+      ],
+      fn(_) { Ok(json.null()) },
+    )
+    |> result.map_error(QueryError)
+
+  case query_result {
+    Ok(_) -> Ok(token)
+    Error(err) -> Error(err)
+  }
+}
+
+fn validate_one_time_token(
+  driver: Postgres,
+  user_id: String,
+  token_type: OneTimeTokenType,
+  token: String,
+) -> Result(Nil, PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  use token_hash <- result.try(
+    encode.sha256_hash(token, token)
+    |> result.replace_error(InternalError("Failed to hash token")),
+  )
+
+  let sql =
+    "
+  select id from pevensie.one_time_token
+  where user_id = $1
+    and token_type = $2
+    and token_hash = $3
+    and deleted_at is null
+    and used_at is null
+    and expires_at < now() -- USE THIS TO CREATE AN ERROR LATER?
+    "
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [
+        pgo.text(user_id),
+        pgo.text(one_time_token_type_to_pg_enum(token_type)),
+        pgo.text(token_hash),
+      ],
+      fn(_) { Ok(json.null()) },
+    )
+    |> result.map_error(QueryError)
+
+  case query_result {
+    Ok(_) -> Ok(Nil)
+    Error(err) -> Error(err)
+  }
+}
+
+fn use_one_time_token(
+  driver: Postgres,
+  user_id: String,
+  token_type: OneTimeTokenType,
+  token: String,
+) -> Result(Nil, PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  use token_hash <- result.try(
+    encode.sha256_hash(token, token)
+    |> result.replace_error(InternalError("Failed to hash token")),
+  )
+
+  let sql =
+    "
+  update from pevensie.one_time_token
+  set used_at = now()
+  where user_id = $1
+    and token_type = $2
+    and token_hash = $3
+    and deleted_at is null
+    and used_at is null
+    and expires_at < now() -- USE THIS TO CREATE AN ERROR LATER?
+  returning id
+    "
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [
+        pgo.text(user_id),
+        pgo.text(one_time_token_type_to_pg_enum(token_type)),
+        pgo.text(token_hash),
+      ],
+      fn(_) { Ok(json.null()) },
+    )
+    |> result.map_error(QueryError)
+
+  case query_result {
+    Ok(_) -> Ok(Nil)
+    Error(err) -> Error(err)
+  }
+}
+
+fn delete_one_time_token(
+  driver: Postgres,
+  user_id: String,
+  token_type: OneTimeTokenType,
+  token: String,
+) -> Result(Nil, PostgresError) {
+  let assert Postgres(_, Some(conn)) = driver
+
+  use token_hash <- result.try(
+    encode.sha256_hash(token, token)
+    |> result.replace_error(InternalError("Failed to hash token")),
+  )
+
+  let sql =
+    "
+  update from pevensie.one_time_token
+  set deleted_at = now()
+  where user_id = $1
+    and token_type = $2
+    and token_hash = $3
+  returning id
+    "
+
+  let query_result =
+    pgo.execute(
+      sql,
+      conn,
+      [
+        pgo.text(user_id),
+        pgo.text(one_time_token_type_to_pg_enum(token_type)),
+        pgo.text(token_hash),
+      ],
+      fn(_) { Ok(json.null()) },
+    )
+    |> result.map_error(QueryError)
+
+  case query_result {
+    Ok(_) -> Ok(Nil)
+    Error(err) -> Error(err)
+  }
+}
+
+// ----- Cache Driver ----- //
 
 /// Creates a new [`CacheDriver`](/pevensie/drivers/drivers.html#CacheDriver) for use with
 /// the [`pevensie/cache.new`](/pevensie/cache.html#new) function.

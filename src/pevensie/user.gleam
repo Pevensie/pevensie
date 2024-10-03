@@ -46,7 +46,7 @@ import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/json
 import gleam/option.{type Option, None}
-import pevensie/internal/encoder.{type Encoder}
+import pevensie/internal/encode.{type Encoder}
 
 // ----- User ----- //
 
