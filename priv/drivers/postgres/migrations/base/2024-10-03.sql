@@ -1,4 +1,4 @@
--- Initial baes migration for Pevensie.
+-- Initial base migration for Pevensie.
 --
 -- Sets up the `pevensie` schema, useful functions (UUIDv7)
 -- and the `module_version` table. 
