@@ -679,10 +679,11 @@ pub fn create_one_time_token(
   pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
   user_id user_id: String,
   token_type token_type: OneTimeTokenType,
+  ttl_seconds ttl_seconds: Int,
 ) -> Result(String, Nil) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
-  driver.create_one_time_token(driver.driver, user_id, token_type)
+  driver.create_one_time_token(driver.driver, user_id, token_type, ttl_seconds)
 }
 
 pub fn validate_one_time_token(
@@ -817,10 +818,11 @@ type DeleteSessionFunction(auth_driver) =
 ///   - auth_driver: The auth driver to use.
 ///   - user_id: The ID of the user to create the token for.
 ///   - token_type: The type of token to create.
+///   - ttl_seconds: The number of seconds the token should last for.
 ///
 /// Returns: the token
 type CreateOneTimeTokenFunction(auth_driver) =
-  fn(auth_driver, String, OneTimeTokenType) -> Result(String, Nil)
+  fn(auth_driver, String, OneTimeTokenType, Int) -> Result(String, Nil)
 
 /// A function that checks if a one time token is still active.
 /// Args:

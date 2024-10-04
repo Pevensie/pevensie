@@ -434,8 +434,8 @@ pub fn new_auth_driver(
         Nil
       })
     },
-    create_one_time_token: fn(driver, user_id, token_type) {
-      create_one_time_token(driver, user_id, token_type)
+    create_one_time_token: fn(driver, user_id, token_type, ttl_seconds) {
+      create_one_time_token(driver, user_id, token_type, ttl_seconds)
       // TODO: Handle errors
       |> result.map_error(fn(err) {
         io.debug(err)
@@ -1058,7 +1058,7 @@ fn delete_sessions_for_user(
       sql,
       conn,
       [pgo.text(user_id), pgo.text(ignored_session_id)],
-      fn(_) { Ok(json.null()) },
+      dynamic.dynamic,
     )
     // TODO: Handle errors
     |> result.map_error(QueryError)
@@ -1160,7 +1160,7 @@ fn delete_session(
       "
 
   let query_result =
-    pgo.execute(sql, conn, [pgo.text(session_id)], fn(_) { Ok(json.null()) })
+    pgo.execute(sql, conn, [pgo.text(session_id)], dynamic.dynamic)
     // TODO: Handle errors
     |> result.map_error(QueryError)
 
@@ -1186,6 +1186,7 @@ fn create_one_time_token(
   driver: Postgres,
   user_id: String,
   token_type: OneTimeTokenType,
+  ttl_seconds: Int,
 ) -> Result(String, PostgresError) {
   let assert Postgres(_, Some(conn)) = driver
 
@@ -1199,8 +1200,8 @@ fn create_one_time_token(
 
   let sql =
     "
-  insert into pevensie.one_time_token (user_id, token_type, token_hash)
-  values ($1, $2, $3)
+  insert into pevensie.one_time_token (user_id, token_type, token_hash, expires_at)
+  values ($1, $2, $3, now() + interval '$4 seconds')
     "
 
   let query_result =
@@ -1211,8 +1212,9 @@ fn create_one_time_token(
         pgo.text(user_id),
         pgo.text(one_time_token_type_to_pg_enum(token_type)),
         pgo.text(token_hash),
+        pgo.text(int.to_string(ttl_seconds)),
       ],
-      fn(_) { Ok(json.null()) },
+      dynamic.dynamic,
     )
     |> result.map_error(QueryError)
 
@@ -1255,7 +1257,7 @@ fn validate_one_time_token(
         pgo.text(one_time_token_type_to_pg_enum(token_type)),
         pgo.text(token_hash),
       ],
-      fn(_) { Ok(json.null()) },
+      dynamic.dynamic,
     )
     |> result.map_error(QueryError)
 
@@ -1300,7 +1302,7 @@ fn use_one_time_token(
         pgo.text(one_time_token_type_to_pg_enum(token_type)),
         pgo.text(token_hash),
       ],
-      fn(_) { Ok(json.null()) },
+      dynamic.dynamic,
     )
     |> result.map_error(QueryError)
 
@@ -1342,7 +1344,7 @@ fn delete_one_time_token(
         pgo.text(one_time_token_type_to_pg_enum(token_type)),
         pgo.text(token_hash),
       ],
-      fn(_) { Ok(json.null()) },
+      dynamic.dynamic,
     )
     |> result.map_error(QueryError)
 
@@ -1437,7 +1439,7 @@ fn store_in_cache(
       sql,
       conn,
       [pgo.text(resource_type), pgo.text(key), pgo.text(value)],
-      fn(_) { Ok(json.null()) },
+      dynamic.dynamic,
     )
     // TODO: Handle errors
     |> result.map_error(QueryError)
@@ -1511,9 +1513,12 @@ fn delete_from_cache(
     where resource_type = $1 and key = $2"
 
   let query_result =
-    pgo.execute(sql, conn, [pgo.text(resource_type), pgo.text(key)], fn(_) {
-      Ok(json.null())
-    })
+    pgo.execute(
+      sql,
+      conn,
+      [pgo.text(resource_type), pgo.text(key)],
+      dynamic.dynamic,
+    )
     // TODO: Handle errors
     |> result.map_error(QueryError)
 
