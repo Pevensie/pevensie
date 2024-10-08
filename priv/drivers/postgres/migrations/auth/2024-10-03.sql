@@ -33,7 +33,6 @@ create table if not exists pevensie."session" (
 );
 
 -- one_time_token
--- TODO: see if we can do 'if not exists'
 create type pevensie."one_time_token_type" as enum (
   'password-reset'
 );

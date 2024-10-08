@@ -60,7 +60,6 @@ language plpgsql
 -- Stores the most up-to-date migration used for each module.
 -- Module versions are stored as dates that correspond to the
 -- filenames of the migrations in priv/drivers/postgres/migrations/<module_name>
--- TODO: see if we can do 'if not exists'
 create type pevensie."module" as enum (
   'base',
   'auth',

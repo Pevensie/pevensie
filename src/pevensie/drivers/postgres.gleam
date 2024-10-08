@@ -182,10 +182,7 @@ import filepath
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto
-import gleam/dynamic.{
-  type DecodeErrors as DynamicDecodeErrors, type Decoder,
-  DecodeError as DynamicDecodeError,
-}
+import gleam/dynamic.{type Decoder, DecodeError as DynamicDecodeError}
 import gleam/erlang
 import gleam/erlang/process
 import gleam/int
@@ -195,7 +192,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/pair
-import gleam/pgo.{type QueryError as PgoQueryError}
+import gleam/pgo
 import gleam/result
 import gleam/set
 import gleam/string
@@ -204,11 +201,12 @@ import pevensie/auth.{
   type AuthDriver, type OneTimeTokenType, AuthDriver, PasswordReset,
 }
 import pevensie/cache.{type CacheDriver, CacheDriver}
+import pevensie/drivers
 import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
 import pevensie/session.{type Session, Session}
 import pevensie/user.{
-  type UpdateField, type User, type UserInsert, type UserSearchFields,
+  type UpdateField, type User, type UserCreate, type UserSearchFields,
   type UserUpdate, Ignore, Set, User, app_metadata_encoder,
 }
 import simplifile
@@ -258,7 +256,15 @@ pub type PostgresConfig {
 
 /// The Postgres driver.
 pub opaque type Postgres {
-  Postgres(config: pgo.Config, conn: Option(pgo.Connection))
+  Postgres(config: PostgresConfig, conn: Option(pgo.Connection))
+}
+
+/// Errors that can occur when interacting with the Postgres driver.
+/// Will probably be removed or changed - haven't decided on the final API yet.
+pub type PostgresError {
+  ConstraintViolated(message: String, constraint: String, detail: String)
+  PostgresqlError(code: String, name: String, message: String)
+  ConnectionUnavailable
 }
 
 /// Returns a default [`PostgresConfig`](#PostgresConfig) for connecting to a local
@@ -318,6 +324,27 @@ fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
   )
 }
 
+fn pgo_query_error_to_postgres_error(err: pgo.QueryError) -> PostgresError {
+  case err {
+    pgo.PostgresqlError(code, name, message) ->
+      PostgresqlError(code, name, message)
+    pgo.ConnectionUnavailable -> ConnectionUnavailable
+    pgo.ConstraintViolated(message, constraint, detail) ->
+      ConstraintViolated(message, constraint, detail)
+    _ ->
+      panic as "pgo Unexpected* error - should not occur if queries are written correctly"
+  }
+}
+
+fn pgo_query_error_to_pevensie_error(
+  err: pgo.QueryError,
+  pevensie_error: fn(PostgresError) -> a,
+) -> a {
+  err
+  |> pgo_query_error_to_postgres_error
+  |> pevensie_error
+}
+
 // ----- Auth Driver ----- //
 
 /// Creates a new [`AuthDriver`](/pevensie/drivers/drivers.html#AuthDriver) for use with
@@ -345,157 +372,53 @@ fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
 /// ```
 pub fn new_auth_driver(
   config: PostgresConfig,
-) -> AuthDriver(Postgres, user_metadata) {
+) -> AuthDriver(Postgres, PostgresError, user_metadata) {
   AuthDriver(
-    driver: Postgres(config |> postgres_config_to_pgo_config, None),
-    connect: connect,
-    disconnect: disconnect,
-    list_users: fn(driver, limit, offset, user_search_fields, decoder) {
-      list_users(driver, limit, offset, user_search_fields, decoder)
-      // TODO: Handle errors
-      |> result.map_error(fn(_err) { Nil })
-    },
-    insert_user: fn(driver, user, user_metadata_decoder, user_metadata_encoder) {
-      insert_user(driver, user, user_metadata_decoder, user_metadata_encoder)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    update_user: fn(
-      driver,
-      field,
-      value,
-      user,
-      user_metadata_decoder,
-      user_metadata_encoder,
-    ) {
-      update_user(
-        driver,
-        field,
-        value,
-        user,
-        user_metadata_decoder,
-        user_metadata_encoder,
-      )
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    delete_user: fn(driver, field, value, user_metadata_decoder) {
-      delete_user(driver, field, value, user_metadata_decoder)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    get_session: fn(driver, session_id, ip, user_agent) {
-      get_session(driver, session_id, ip, user_agent)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    create_session: fn(
-      driver,
-      user_id,
-      ip,
-      user_agent,
-      ttl_seconds,
-      delete_other_sessions,
-    ) {
-      create_session(
-        driver,
-        user_id,
-        ip,
-        user_agent,
-        ttl_seconds,
-        delete_other_sessions,
-      )
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    delete_session: fn(driver, session_id) {
-      delete_session(driver, session_id)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    create_one_time_token: fn(driver, user_id, token_type, ttl_seconds) {
-      create_one_time_token(driver, user_id, token_type, ttl_seconds)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    validate_one_time_token: fn(driver, user_id, token_type, token) {
-      validate_one_time_token(driver, user_id, token_type, token)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    use_one_time_token: fn(driver, user_id, token_type, token) {
-      use_one_time_token(driver, user_id, token_type, token)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    delete_one_time_token: fn(driver, user_id, token_type, token) {
-      delete_one_time_token(driver, user_id, token_type, token)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
+    driver: Postgres(config, None),
+    connect:,
+    disconnect:,
+    list_users:,
+    create_user:,
+    update_user:,
+    delete_user:,
+    get_session:,
+    create_session:,
+    delete_session:,
+    create_one_time_token:,
+    validate_one_time_token:,
+    use_one_time_token:,
+    delete_one_time_token:,
   )
 }
 
 // Creates a new connection pool for the given Postgres driver.
-fn connect(driver: Postgres) -> Result(Postgres, Nil) {
+fn connect(
+  driver: Postgres,
+) -> Result(Postgres, drivers.ConnectError(PostgresError)) {
   case driver {
     Postgres(config, None) -> {
-      let conn = pgo.connect(config)
+      let conn =
+        config
+        |> postgres_config_to_pgo_config
+        |> pgo.connect
 
       Ok(Postgres(config, Some(conn)))
     }
-    Postgres(_, Some(_)) -> Error(Nil)
+    Postgres(_, Some(_)) -> Error(drivers.AlreadyConnected)
   }
 }
 
 // Closes the connection pool for the given Postgres driver.
-fn disconnect(driver: Postgres) -> Result(Postgres, Nil) {
+fn disconnect(
+  driver: Postgres,
+) -> Result(Postgres, drivers.DisconnectError(PostgresError)) {
   case driver {
     Postgres(config, Some(conn)) -> {
       let _ = pgo.disconnect(conn)
       Ok(Postgres(config, None))
     }
-    Postgres(_, None) -> Error(Nil)
+    Postgres(_, None) -> Error(drivers.NotConnected)
   }
-}
-
-/// Errors that can occur when interacting with the Postgres driver.
-/// Will probably be removed or changed - haven't decided on the final API yet.
-pub type PostgresError {
-  NotFound
-  QueryError(PgoQueryError)
-  DecodeError(DynamicDecodeErrors)
-  InternalError(String)
 }
 
 /// The SQL used to select fields from the `user` table.
@@ -639,7 +562,7 @@ fn list_users(
   offset: Int,
   filters: UserSearchFields,
   using user_metadata_decoder: Decoder(user_metadata),
-) -> Result(List(User(user_metadata)), PostgresError) {
+) -> Result(List(User(user_metadata)), auth.GetError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let filter_fields =
@@ -671,24 +594,26 @@ fn list_users(
     limit " <> int.to_string(limit) <> "
     offset " <> int.to_string(offset)
 
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      filter_fields |> list.map(pair.second),
-      user_decoder(user_metadata_decoder),
-    )
-    |> result.map_error(QueryError)
-
-  query_result |> result.map(fn(response) { response.rows })
+  pgo.execute(
+    sql,
+    conn,
+    filter_fields |> list.map(pair.second),
+    user_decoder(user_metadata_decoder),
+  )
+  |> result.map(fn(response) { response.rows })
+  |> result.map_error(fn(err) {
+    err
+    |> pgo_query_error_to_postgres_error
+    |> auth.GetDriverError
+  })
 }
 
-fn insert_user(
+fn create_user(
   driver: Postgres,
-  user: UserInsert(user_metadata),
+  user: UserCreate(user_metadata),
   decoder user_metadata_decoder: Decoder(user_metadata),
   encoder user_metadata_encoder: Encoder(user_metadata),
-) -> Result(User(user_metadata), PostgresError) {
+) -> Result(User(user_metadata), auth.CreateError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql = "
@@ -736,13 +661,16 @@ fn insert_user(
       ],
       user_decoder(user_metadata_decoder),
     )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
+    |> result.map_error(pgo_query_error_to_pevensie_error(
+      _,
+      auth.CreateDriverError,
+    ))
 
   use response <- result.try(query_result)
   case response.rows {
     [user] -> Ok(user)
-    _ -> Error(InternalError("Unexpected number of rows returned"))
+    [] -> Error(auth.CreatedTooFewRecords)
+    [_, ..] -> Error(auth.CreatedTooManyRecords)
   }
 }
 
@@ -763,7 +691,7 @@ fn update_user(
   user: UserUpdate(user_metadata),
   decoder user_metadata_decoder: Decoder(user_metadata),
   encoder user_metadata_encoder: Encoder(user_metadata),
-) -> Result(User(user_metadata), PostgresError) {
+) -> Result(User(user_metadata), auth.UpdateError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let optional_timestamp_to_pgo = fn(timestamp: Option(Time)) -> pgo.Value {
@@ -861,14 +789,16 @@ fn update_user(
       list.append(update_values, [pgo.text(value)]),
       user_decoder(user_metadata_decoder),
     )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
+    |> result.map_error(pgo_query_error_to_pevensie_error(
+      _,
+      auth.UpdateDriverError,
+    ))
 
   use response <- result.try(query_result)
   case response.rows {
-    [] -> Error(NotFound)
     [user] -> Ok(user)
-    _ -> Error(InternalError("Unexpected number of rows returned"))
+    [] -> Error(auth.UpdatedTooFewRecords)
+    _ -> Error(auth.UpdatedTooManyRecords)
   }
 }
 
@@ -877,7 +807,7 @@ fn delete_user(
   field: String,
   value: String,
   decoder user_metadata_decoder: Decoder(user_metadata),
-) -> Result(User(user_metadata), PostgresError) {
+) -> Result(User(user_metadata), auth.DeleteError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql = "
@@ -893,14 +823,16 @@ fn delete_user(
       [pgo.text(value)],
       user_decoder(user_metadata_decoder),
     )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
+    |> result.map_error(pgo_query_error_to_pevensie_error(
+      _,
+      auth.DeleteDriverError,
+    ))
 
   use response <- result.try(query_result)
   case response.rows {
-    [] -> Error(NotFound)
     [user] -> Ok(user)
-    _ -> Error(InternalError("Unexpected number of rows returned"))
+    [] -> Error(auth.DeletedTooFewRecords)
+    _ -> Error(auth.DeletedTooManyRecords)
   }
 }
 
@@ -967,7 +899,7 @@ fn get_session(
   session_id: String,
   ip: Option(IpAddress),
   user_agent: Option(String),
-) -> Result(Option(Session), PostgresError) {
+) -> Result(Session, auth.GetError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql = "
@@ -1017,54 +949,53 @@ fn get_session(
         dynamic.element(1, dynamic.bool),
       ),
     )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
+    |> result.map_error(pgo_query_error_to_pevensie_error(
+      _,
+      auth.GetDriverError,
+    ))
 
   use response <- result.try(query_result)
   case response.rows {
-    [] -> Ok(None)
     // If no expiration is set, the value is valid forever
-    [#(session, False)] -> Ok(Some(session))
+    [#(session, False)] -> Ok(session)
     // If the value has expired, return None and delete the session
     // in an async task
     [#(_, True)] -> {
       process.start(fn() { delete_session(driver, session_id) }, False)
-      Ok(None)
+      Error(auth.GotTooFewRecords)
     }
-    _ -> Error(InternalError("Unexpected number of rows returned"))
+    [] -> Error(auth.GotTooFewRecords)
+    _ -> Error(auth.GotTooManyRecords)
   }
 }
 
-// > Note: thir may become part of the public driver API in the future
-fn delete_sessions_for_user(
-  driver: Postgres,
-  user_id: String,
-  except ignored_session_id: String,
-) -> Result(Nil, PostgresError) {
-  let assert Postgres(_, Some(conn)) = driver
-
-  let sql =
-    "
-    delete from pevensie.\"session\"
-    where user_id = $1 and id != $2
-    returning id
-  "
-
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [pgo.text(user_id), pgo.text(ignored_session_id)],
-      dynamic.dynamic,
-    )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> Error(err)
-  }
-}
+// > Note: this may become part of the public driver API in the future
+// fn delete_sessions_for_user(
+//   driver: Postgres,
+//   user_id: String,
+//   except ignored_session_id: String,
+// ) -> Result(Nil, auth.DeleteError(PostgresError)) {
+//   let assert Postgres(_, Some(conn)) = driver
+//
+//   let sql =
+//     "
+//     delete from pevensie.\"session\"
+//     where user_id = $1 and id != $2
+//     returning id
+//   "
+//
+//   pgo.execute(
+//     sql,
+//     conn,
+//     [pgo.text(user_id), pgo.text(ignored_session_id)],
+//     dynamic.dynamic,
+//   )
+//   |> result.replace(Nil)
+//   |> result.map_error(pgo_query_error_to_pevensie_error(
+//     _,
+//     auth.DeleteDriverError,
+//   ))
+// }
 
 fn create_session(
   driver: Postgres,
@@ -1072,8 +1003,7 @@ fn create_session(
   ip: Option(IpAddress),
   user_agent: Option(String),
   ttl_seconds: Option(Int),
-  delete_other_sessions: Bool,
-) -> Result(Session, PostgresError) {
+) -> Result(Session, auth.CreateError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let expires_at_sql = case ttl_seconds {
@@ -1113,40 +1043,26 @@ fn create_session(
     pgo.execute(
       sql,
       conn,
-      [
-        pgo.text(user_id),
-        // pgo.nullable(pgo.text, ip |> option.map(net.format_ip_address)),
-        pgo.nullable(pgo.text, user_agent),
-      ],
+      [pgo.text(user_id), pgo.nullable(pgo.text, user_agent)],
       session_decoder(),
     )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
+    |> result.map_error(pgo_query_error_to_pevensie_error(
+      _,
+      auth.CreateDriverError,
+    ))
 
   use response <- result.try(query_result)
   case response.rows {
-    [] -> Error(NotFound)
-    [session] -> {
-      case delete_other_sessions {
-        True -> {
-          use _ <- result.try(delete_sessions_for_user(
-            driver,
-            user_id,
-            session.id,
-          ))
-          Ok(session)
-        }
-        False -> Ok(session)
-      }
-    }
-    _ -> Error(InternalError("Unexpected number of rows returned"))
+    [] -> Error(auth.CreatedTooFewRecords)
+    [session] -> Ok(session)
+    _ -> Error(auth.CreatedTooManyRecords)
   }
 }
 
 fn delete_session(
   driver: Postgres,
   session_id: String,
-) -> Result(Nil, PostgresError) {
+) -> Result(Nil, auth.DeleteError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql =
@@ -1156,15 +1072,12 @@ fn delete_session(
     returning id
       "
 
-  let query_result =
-    pgo.execute(sql, conn, [pgo.text(session_id)], dynamic.dynamic)
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> Error(err)
-  }
+  pgo.execute(sql, conn, [pgo.text(session_id)], dynamic.dynamic)
+  |> result.replace(Nil)
+  |> result.map_error(pgo_query_error_to_pevensie_error(
+    _,
+    auth.DeleteDriverError,
+  ))
 }
 
 fn one_time_token_type_to_prefix(token_type: OneTimeTokenType) -> String {
@@ -1184,7 +1097,7 @@ fn create_one_time_token(
   user_id: String,
   token_type: OneTimeTokenType,
   ttl_seconds: Int,
-) -> Result(String, PostgresError) {
+) -> Result(String, auth.CreateError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let token =
@@ -1192,7 +1105,7 @@ fn create_one_time_token(
     <> { crypto.strong_random_bytes(36) |> bit_array.base64_encode(True) }
   use token_hash <- result.try(
     encode.sha256_hash(token, token)
-    |> result.replace_error(InternalError("Failed to hash token")),
+    |> result.replace_error(auth.CreateInternalError("Failed to hash token")),
   )
 
   let sql =
@@ -1201,24 +1114,22 @@ fn create_one_time_token(
   values ($1, $2, $3, now() + interval '$4 seconds')
     "
 
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [
-        pgo.text(user_id),
-        pgo.text(one_time_token_type_to_pg_enum(token_type)),
-        pgo.text(token_hash),
-        pgo.text(int.to_string(ttl_seconds)),
-      ],
-      dynamic.dynamic,
-    )
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(token)
-    Error(err) -> Error(err)
-  }
+  pgo.execute(
+    sql,
+    conn,
+    [
+      pgo.text(user_id),
+      pgo.text(one_time_token_type_to_pg_enum(token_type)),
+      pgo.text(token_hash),
+      pgo.text(int.to_string(ttl_seconds)),
+    ],
+    dynamic.dynamic,
+  )
+  |> result.replace(token)
+  |> result.map_error(pgo_query_error_to_pevensie_error(
+    _,
+    auth.CreateDriverError,
+  ))
 }
 
 fn validate_one_time_token(
@@ -1226,12 +1137,12 @@ fn validate_one_time_token(
   user_id: String,
   token_type: OneTimeTokenType,
   token: String,
-) -> Result(Nil, PostgresError) {
+) -> Result(Nil, auth.GetError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   use token_hash <- result.try(
     encode.sha256_hash(token, token)
-    |> result.replace_error(InternalError("Failed to hash token")),
+    |> result.replace_error(auth.GetInternalError("Failed to hash token")),
   )
 
   let sql =
@@ -1245,23 +1156,18 @@ fn validate_one_time_token(
     and expires_at < now() -- USE THIS TO CREATE AN ERROR LATER?
     "
 
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [
-        pgo.text(user_id),
-        pgo.text(one_time_token_type_to_pg_enum(token_type)),
-        pgo.text(token_hash),
-      ],
-      dynamic.dynamic,
-    )
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> Error(err)
-  }
+  pgo.execute(
+    sql,
+    conn,
+    [
+      pgo.text(user_id),
+      pgo.text(one_time_token_type_to_pg_enum(token_type)),
+      pgo.text(token_hash),
+    ],
+    dynamic.dynamic,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(pgo_query_error_to_pevensie_error(_, auth.GetDriverError))
 }
 
 fn use_one_time_token(
@@ -1269,12 +1175,12 @@ fn use_one_time_token(
   user_id: String,
   token_type: OneTimeTokenType,
   token: String,
-) -> Result(Nil, PostgresError) {
+) -> Result(Nil, auth.UpdateError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   use token_hash <- result.try(
     encode.sha256_hash(token, token)
-    |> result.replace_error(InternalError("Failed to hash token")),
+    |> result.replace_error(auth.UpdateInternalError("Failed to hash token")),
   )
 
   let sql =
@@ -1290,23 +1196,21 @@ fn use_one_time_token(
   returning id
     "
 
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [
-        pgo.text(user_id),
-        pgo.text(one_time_token_type_to_pg_enum(token_type)),
-        pgo.text(token_hash),
-      ],
-      dynamic.dynamic,
-    )
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> Error(err)
-  }
+  pgo.execute(
+    sql,
+    conn,
+    [
+      pgo.text(user_id),
+      pgo.text(one_time_token_type_to_pg_enum(token_type)),
+      pgo.text(token_hash),
+    ],
+    dynamic.dynamic,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(pgo_query_error_to_pevensie_error(
+    _,
+    auth.UpdateDriverError,
+  ))
 }
 
 fn delete_one_time_token(
@@ -1314,12 +1218,12 @@ fn delete_one_time_token(
   user_id: String,
   token_type: OneTimeTokenType,
   token: String,
-) -> Result(Nil, PostgresError) {
+) -> Result(Nil, auth.DeleteError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   use token_hash <- result.try(
     encode.sha256_hash(token, token)
-    |> result.replace_error(InternalError("Failed to hash token")),
+    |> result.replace_error(auth.DeleteInternalError("Failed to hash token")),
   )
 
   let sql =
@@ -1332,23 +1236,21 @@ fn delete_one_time_token(
   returning id
     "
 
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [
-        pgo.text(user_id),
-        pgo.text(one_time_token_type_to_pg_enum(token_type)),
-        pgo.text(token_hash),
-      ],
-      dynamic.dynamic,
-    )
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> Error(err)
-  }
+  pgo.execute(
+    sql,
+    conn,
+    [
+      pgo.text(user_id),
+      pgo.text(one_time_token_type_to_pg_enum(token_type)),
+      pgo.text(token_hash),
+    ],
+    dynamic.dynamic,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(pgo_query_error_to_pevensie_error(
+    _,
+    auth.DeleteDriverError,
+  ))
 }
 
 // ----- Cache Driver ----- //
@@ -1371,45 +1273,26 @@ fn delete_one_time_token(
 ///   // ...
 /// }
 /// ```
-pub fn new_cache_driver(config: PostgresConfig) -> CacheDriver(Postgres) {
+pub fn new_cache_driver(
+  config: PostgresConfig,
+) -> CacheDriver(Postgres, PostgresError) {
   CacheDriver(
-    driver: Postgres(config |> postgres_config_to_pgo_config, None),
+    driver: Postgres(config, None),
     connect: connect,
     disconnect: disconnect,
-    store: fn(driver, resource_type, key, value, ttl_seconds) {
-      store_in_cache(driver, resource_type, key, value, ttl_seconds)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    get: fn(driver, resource_type, key) {
-      get_from_cache(driver, resource_type, key)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
-    delete: fn(driver, resource_type, key) {
-      delete_from_cache(driver, resource_type, key)
-      // TODO: Handle errors
-      |> result.map_error(fn(err) {
-        io.debug(err)
-        Nil
-      })
-    },
+    set: set_in_cache,
+    get: get_from_cache,
+    delete: delete_from_cache,
   )
 }
 
-fn store_in_cache(
+fn set_in_cache(
   driver: Postgres,
   resource_type: String,
   key: String,
   value: String,
   ttl_seconds: Option(Int),
-) -> Result(Nil, PostgresError) {
+) -> Result(Nil, cache.SetError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let expires_at_sql = case ttl_seconds {
@@ -1431,27 +1314,21 @@ fn store_in_cache(
     )
     on conflict (resource_type, key) do update set value = $3"
 
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [pgo.text(resource_type), pgo.text(key), pgo.text(value)],
-      dynamic.dynamic,
-    )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> Error(err)
-  }
+  pgo.execute(
+    sql,
+    conn,
+    [pgo.text(resource_type), pgo.text(key), pgo.text(value)],
+    dynamic.dynamic,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(pgo_query_error_to_pevensie_error(_, cache.SetDriverError))
 }
 
 fn get_from_cache(
   driver: Postgres,
   resource_type: String,
   key: String,
-) -> Result(Option(String), PostgresError) {
+) -> Result(String, cache.GetError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql =
@@ -1475,14 +1352,16 @@ fn get_from_cache(
         dynamic.element(1, dynamic.bool),
       ),
     )
-    |> result.map_error(QueryError)
+    |> result.map_error(pgo_query_error_to_pevensie_error(
+      _,
+      cache.GetDriverError,
+    ))
 
   use response <- result.try(query_result)
   case response.rows {
-    [] -> Ok(None)
     // If no expiration is set, the value is valid forever
     [#(value, False)] -> {
-      Ok(Some(value))
+      Ok(value)
     }
     // If the value has expired, return None and delete the key
     // in an async task
@@ -1491,9 +1370,10 @@ fn get_from_cache(
         fn() { delete_from_cache(driver, resource_type, key) },
         False,
       )
-      Ok(None)
+      Error(cache.GotTooFewRecords)
     }
-    _ -> Error(InternalError("Unexpected number of rows returned"))
+    [] -> Error(cache.GotTooFewRecords)
+    _ -> Error(cache.GotTooManyRecords)
   }
 }
 
@@ -1501,7 +1381,7 @@ fn delete_from_cache(
   driver: Postgres,
   resource_type: String,
   key: String,
-) -> Result(Nil, PostgresError) {
+) -> Result(Nil, cache.DeleteError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
   let sql =
@@ -1509,20 +1389,17 @@ fn delete_from_cache(
     delete from pevensie.\"cache\"
     where resource_type = $1 and key = $2"
 
-  let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [pgo.text(resource_type), pgo.text(key)],
-      dynamic.dynamic,
-    )
-    // TODO: Handle errors
-    |> result.map_error(QueryError)
-
-  case query_result {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> Error(err)
-  }
+  pgo.execute(
+    sql,
+    conn,
+    [pgo.text(resource_type), pgo.text(key)],
+    dynamic.dynamic,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(pgo_query_error_to_pevensie_error(
+    _,
+    cache.DeleteDriverError,
+  ))
 }
 
 // ----- Migration function ----- //

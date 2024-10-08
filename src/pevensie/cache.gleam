@@ -91,8 +91,8 @@ import pevensie/drivers.{
 ///   // ...
 /// }
 /// ```
-pub type PevensieCache(driver, connected) {
-  PevensieCache(driver: CacheDriver(driver))
+pub type PevensieCache(driver, driver_error, connected) {
+  PevensieCache(driver: CacheDriver(driver, driver_error))
 }
 
 /// Creates a new [`PevensieCache`](#PevensieCache) instance.
@@ -111,8 +111,8 @@ pub type PevensieCache(driver, connected) {
 /// }
 /// ```
 pub fn new(
-  driver driver: CacheDriver(cache_driver),
-) -> PevensieCache(cache_driver, Disconnected) {
+  driver driver: CacheDriver(cache_driver, cache_driver_error),
+) -> PevensieCache(cache_driver, cache_driver_error, Disconnected) {
   PevensieCache(driver:)
 }
 
@@ -133,8 +133,11 @@ pub fn new(
 /// }
 /// ```
 pub fn connect(
-  pevensie_cache: PevensieCache(cache_driver, Disconnected),
-) -> Result(PevensieCache(cache_driver, Connected), Nil) {
+  pevensie_cache: PevensieCache(cache_driver, cache_driver_error, Disconnected),
+) -> Result(
+  PevensieCache(cache_driver, cache_driver_error, Connected),
+  drivers.ConnectError(cache_driver_error),
+) {
   let PevensieCache(driver) = pevensie_cache
 
   driver.connect(driver.driver)
@@ -149,8 +152,11 @@ pub fn connect(
 /// After calling this function, you can no longer use the cache driver
 /// unless you call [`connect`](#connect) again.
 pub fn disconnect(
-  pevensie_cache: PevensieCache(cache_driver, Connected),
-) -> Result(PevensieCache(cache_driver, Disconnected), Nil) {
+  pevensie_cache: PevensieCache(cache_driver, cache_driver_error, Connected),
+) -> Result(
+  PevensieCache(cache_driver, cache_driver_error, Disconnected),
+  drivers.DisconnectError(cache_driver_error),
+) {
   let PevensieCache(driver) = pevensie_cache
 
   driver.disconnect(driver.driver)
@@ -188,23 +194,23 @@ pub fn disconnect(
 /// }
 /// ```
 pub fn set(
-  pevensie_cache: PevensieCache(cache_driver, Connected),
+  pevensie_cache: PevensieCache(cache_driver, cache_driver_error, Connected),
   resource_type resource_type: String,
   key key: String,
   value value: String,
   ttl_seconds ttl_seconds: Option(Int),
-) -> Result(Nil, Nil) {
+) -> Result(Nil, SetError(cache_driver_error)) {
   let PevensieCache(driver) = pevensie_cache
 
-  driver.store(driver.driver, resource_type, key, value, ttl_seconds)
+  driver.set(driver.driver, resource_type, key, value, ttl_seconds)
 }
 
 /// Retrieve a value from the cache.
 pub fn get(
-  pevensie_cache: PevensieCache(cache_driver, Connected),
+  pevensie_cache: PevensieCache(cache_driver, cache_driver_error, Connected),
   resource_type resource_type: String,
   key key: String,
-) -> Result(Option(String), Nil) {
+) -> Result(String, GetError(cache_driver_error)) {
   let PevensieCache(driver) = pevensie_cache
 
   driver.get(driver.driver, resource_type, key)
@@ -212,10 +218,10 @@ pub fn get(
 
 /// Delete a value from the cache.
 pub fn delete(
-  pevensie_cache: PevensieCache(cache_driver, Connected),
+  pevensie_cache: PevensieCache(cache_driver, cache_driver_error, Connected),
   resource_type resource_type: String,
   key key: String,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, DeleteError(cache_driver_error)) {
   let PevensieCache(driver) = pevensie_cache
 
   driver.delete(driver.driver, resource_type, key)
@@ -223,22 +229,39 @@ pub fn delete(
 
 // ----- Cache Driver ----- //
 
-pub type CacheDriver(driver) {
+pub type CacheDriver(driver, driver_error) {
   CacheDriver(
     driver: driver,
-    connect: ConnectFunction(driver),
-    disconnect: DisconnectFunction(driver),
-    store: CacheStoreFunction(driver),
-    get: CacheGetFunction(driver),
-    delete: CacheDeleteFunction(driver),
+    connect: ConnectFunction(driver, driver_error),
+    disconnect: DisconnectFunction(driver, driver_error),
+    set: CacheSetFunction(driver, driver_error),
+    get: CacheGetFunction(driver, driver_error),
+    delete: CacheDeleteFunction(driver, driver_error),
   )
 }
 
-type CacheStoreFunction(cache_driver) =
-  fn(cache_driver, String, String, String, Option(Int)) -> Result(Nil, Nil)
+pub type GetError(cache_driver_error) {
+  GetDriverError(cache_driver_error)
+  GotTooFewRecords
+  GotTooManyRecords
+}
 
-type CacheGetFunction(cache_driver) =
-  fn(cache_driver, String, String) -> Result(Option(String), Nil)
+pub type SetError(cache_driver_error) {
+  SetDriverError(cache_driver_error)
+}
 
-type CacheDeleteFunction(cache_driver) =
-  fn(cache_driver, String, String) -> Result(Nil, Nil)
+pub type DeleteError(cache_driver_error) {
+  DeleteDriverError(cache_driver_error)
+}
+
+type CacheSetFunction(cache_driver, cache_driver_error) =
+  fn(cache_driver, String, String, String, Option(Int)) ->
+    Result(Nil, SetError(cache_driver_error))
+
+type CacheGetFunction(cache_driver, cache_driver_error) =
+  fn(cache_driver, String, String) ->
+    Result(String, GetError(cache_driver_error))
+
+type CacheDeleteFunction(cache_driver, cache_driver_error) =
+  fn(cache_driver, String, String) ->
+    Result(Nil, DeleteError(cache_driver_error))

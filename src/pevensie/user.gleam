@@ -53,7 +53,6 @@ import pevensie/internal/encode.{type Encoder}
 /// Internal metadata used by Pevensie. Contains user information such as
 /// OAuth tokens, etc.
 pub opaque type AppMetadata {
-  // TODO: Properly type app_metadata
   AppMetadata(Dict(String, Dynamic))
 }
 
@@ -107,8 +106,8 @@ pub type User(user_metadata) {
 }
 
 /// A user to be inserted into the database. See [`User`](#User) for fields.
-pub type UserInsert(user_metadata) {
-  UserInsert(
+pub type UserCreate(user_metadata) {
+  UserCreate(
     role: Option(String),
     email: String,
     password_hash: Option(String),
@@ -219,9 +218,10 @@ pub fn default_user_search_fields() -> UserSearchFields {
 
 /// Encodes an [`AppMetadata`](#AppMetadata) value to JSON.
 pub fn app_metadata_encoder(_app_metadata: AppMetadata) -> json.Json {
-  // TODO: Properly type app_metadata
   json.object([])
 }
+
+// TODO: Add app metadata decoder
 
 /// Encodes a [`User`](#User) value to JSON.
 pub fn user_encoder(
@@ -272,3 +272,4 @@ pub fn user_encoder(
     ),
   ])
 }
+// TODO: Add user JSON decoder

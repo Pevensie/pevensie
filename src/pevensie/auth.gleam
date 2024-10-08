@@ -189,8 +189,8 @@ import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
 import pevensie/session.{type Session}
 import pevensie/user.{
-  type User, type UserInsert, type UserSearchFields, type UserUpdate, Set,
-  UserInsert, UserSearchFields, UserUpdate, default_user_search_fields,
+  type User, type UserCreate, type UserSearchFields, type UserUpdate, Set,
+  UserCreate, UserSearchFields, UserUpdate, default_user_search_fields,
   default_user_update,
 }
 
@@ -219,9 +219,9 @@ import pevensie/user.{
 ///   // ...
 /// }
 /// ```
-pub opaque type PevensieAuth(driver, user_metadata, connected) {
+pub opaque type PevensieAuth(driver, driver_error, user_metadata, connected) {
   PevensieAuth(
-    driver: AuthDriver(driver, user_metadata),
+    driver: AuthDriver(driver, driver_error, user_metadata),
     user_metadata_decoder: Decoder(user_metadata),
     user_metadata_encoder: Encoder(user_metadata),
     cookie_key: String,
@@ -243,11 +243,11 @@ pub opaque type PevensieAuth(driver, user_metadata, connected) {
 /// be a long, random string. It's recommended to use a secret key from
 /// a cryptographically secure source, and store it in a secure location.
 pub fn new(
-  driver driver: AuthDriver(driver, user_metadata),
+  driver driver: AuthDriver(driver, driver_error, user_metadata),
   user_metadata_decoder user_metadata_decoder: Decoder(user_metadata),
   user_metadata_encoder user_metadata_encoder: Encoder(user_metadata),
   cookie_key cookie_key: String,
-) -> PevensieAuth(driver, user_metadata, Disconnected) {
+) -> PevensieAuth(driver, driver_error, user_metadata, Disconnected) {
   PevensieAuth(
     driver:,
     user_metadata_decoder:,
@@ -273,8 +273,16 @@ pub fn new(
 /// }
 /// ```
 pub fn connect(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Disconnected),
-) -> Result(PevensieAuth(auth_driver, user_metadata, Connected), Nil) {
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Disconnected,
+  ),
+) -> Result(
+  PevensieAuth(auth_driver, auth_driver_error, user_metadata, Connected),
+  drivers.ConnectError(auth_driver_error),
+) {
   let PevensieAuth(
     driver: auth_driver,
     user_metadata_decoder:,
@@ -296,8 +304,16 @@ pub fn connect(
 /// Runs teardown for your chosen auth driver and returns a disconnected
 /// [`PevensieAuth`](#PevensieAuth) instance.
 pub fn disconnect(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
-) -> Result(PevensieAuth(auth_driver, user_metadata, Disconnected), Nil) {
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
+) -> Result(
+  PevensieAuth(auth_driver, auth_driver_error, user_metadata, Disconnected),
+  drivers.DisconnectError(auth_driver_error),
+) {
   let PevensieAuth(
     driver: auth_driver,
     user_metadata_decoder:,
@@ -329,11 +345,16 @@ pub fn disconnect(
 /// Drivers may handle search fields differently, so see the documentation
 /// for your chosen driver for more information.
 pub fn list_users(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   limit limit: Int,
   offset offset: Int,
   filters filters: UserSearchFields,
-) -> Result(List(User(user_metadata)), Nil) {
+) -> Result(List(User(user_metadata)), GetError(auth_driver_error)) {
   let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
   driver.list_users(
@@ -349,9 +370,14 @@ pub fn list_users(
 ///
 /// Errors if exactly one user is not found.
 pub fn get_user_by_id(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), GetError(auth_driver_error)) {
   let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
   use users <- result.try(driver.list_users(
@@ -366,7 +392,8 @@ pub fn get_user_by_id(
 
   case users {
     [user] -> Ok(user)
-    _ -> Error(Nil)
+    [] -> Error(GotTooFewRecords)
+    [_, ..] -> Error(GotTooManyRecords)
   }
 }
 
@@ -374,9 +401,14 @@ pub fn get_user_by_id(
 ///
 /// Errors if exactly one user is not found.
 pub fn get_user_by_email(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   email email: String,
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), GetError(auth_driver_error)) {
   let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
 
   use users <- result.try(driver.list_users(
@@ -391,7 +423,8 @@ pub fn get_user_by_email(
 
   case users {
     [user] -> Ok(user)
-    _ -> Error(Nil)
+    [] -> Error(GotTooFewRecords)
+    [_, ..] -> Error(GotTooManyRecords)
   }
 }
 
@@ -405,33 +438,45 @@ fn hash_password(password: String) {
 /// Errors if exactly one user is not found, or if the password for the
 /// user is incorrect.
 pub fn get_user_by_email_and_password(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   email email: String,
   password password: String,
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), GetError(auth_driver_error)) {
   use user <- result.try(get_user_by_email(pevensie_auth, email))
   case argus.verify(user.password_hash |> option.unwrap(""), password) {
     Ok(True) -> Ok(user)
-    _ -> Error(Nil)
+    _ -> Error(GotTooFewRecords)
   }
 }
 
 /// Create a new user with the given email and password.
 pub fn create_user_with_email(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   email email: String,
   password password: String,
   user_metadata user_metadata: user_metadata,
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), CreateError(auth_driver_error)) {
   let PevensieAuth(driver:, user_metadata_decoder:, user_metadata_encoder:, ..) =
     pevensie_auth
 
-  // TODO: Handle errors
-  let assert Ok(hashed_password) = hash_password(password)
+  use hashed_password <- result.try(
+    hash_password(password)
+    |> result.map_error(CreateHashError),
+  )
 
-  driver.insert_user(
+  driver.create_user(
     driver.driver,
-    UserInsert(
+    UserCreate(
       role: None,
       email: email,
       password_hash: Some(hashed_password.encoded_hash),
@@ -468,10 +513,15 @@ pub fn create_user_with_email(
 /// > [`set_user_password`](#set_user_password) function instead in order
 /// > to hash the password before storing it in the database.
 pub fn update_user(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   user_update user_update: UserUpdate(user_metadata),
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), UpdateError(auth_driver_error)) {
   let PevensieAuth(driver:, user_metadata_decoder:, user_metadata_encoder:, ..) =
     pevensie_auth
 
@@ -487,10 +537,15 @@ pub fn update_user(
 
 /// Update a user's role.
 pub fn set_user_role(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   role role: Option(String),
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), UpdateError(auth_driver_error)) {
   update_user(
     pevensie_auth,
     user_id,
@@ -500,10 +555,15 @@ pub fn set_user_role(
 
 /// Update a user's email.
 pub fn set_user_email(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   email email: String,
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), UpdateError(auth_driver_error)) {
   update_user(
     pevensie_auth,
     user_id,
@@ -517,15 +577,20 @@ pub fn set_user_email(
 /// stored in the database. If no password is provided, the user's password
 /// will be set to `null`.
 pub fn set_user_password(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   password password: Option(String),
-) -> Result(User(user_metadata), Nil) {
+) -> Result(User(user_metadata), UpdateError(auth_driver_error)) {
   let password_hash_result = case password {
     None -> Ok(None)
     Some(password) ->
       hash_password(password)
-      |> result.replace_error(Nil)
+      |> result.map_error(UpdateHashError)
       |> result.map(fn(hashes) { Some(hashes.encoded_hash) })
   }
 
@@ -550,33 +615,35 @@ pub fn set_user_password(
 /// be useful if you want to ensure that a user can only have one active
 /// session at a time.
 pub fn create_session(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   ip ip: Option(IpAddress),
   user_agent user_agent: Option(String),
   ttl_seconds ttl_seconds: Option(Int),
-  delete_other_sessions delete_other_sessions: Bool,
-) -> Result(Session, Nil) {
+) -> Result(Session, CreateError(auth_driver_error)) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
-  driver.create_session(
-    driver.driver,
-    user_id,
-    ip,
-    user_agent,
-    ttl_seconds,
-    delete_other_sessions,
-  )
+  driver.create_session(driver.driver, user_id, ip, user_agent, ttl_seconds)
 }
 
 /// Fetch a session by ID. If IP address or user agent were provided when
 /// the session was created, they should be provided here as well.
 pub fn get_session(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   session_id session_id: String,
   ip ip: Option(IpAddress),
   user_agent user_agent: Option(String),
-) -> Result(Option(Session), Nil) {
+) -> Result(Session, GetError(auth_driver_error)) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.get_session(driver.driver, session_id, ip, user_agent)
@@ -584,15 +651,25 @@ pub fn get_session(
 
 /// Delete a session by ID.
 pub fn delete_session(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   session_id session_id: String,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, DeleteError(auth_driver_error)) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.delete_session(driver.driver, session_id)
 }
 
 // ----- User Authentication ----- //
+
+pub type LogInError(auth_driver_error) {
+  LogInUserError(GetError(auth_driver_error))
+  LogInSessionError(CreateError(auth_driver_error))
+}
 
 /// Log in a user using email and password.
 ///
@@ -602,17 +679,21 @@ pub fn delete_session(
 /// Uses a session TTL of 24 hours, and does not delete any other sessions
 /// for the user.
 pub fn log_in_user(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   email email: String,
   password password: String,
   ip ip: Option(IpAddress),
   user_agent user_agent: Option(String),
-) -> Result(#(Session, User(user_metadata)), Nil) {
-  use user <- result.try(get_user_by_email_and_password(
-    pevensie_auth,
-    email,
-    password,
-  ))
+) -> Result(#(Session, User(user_metadata)), LogInError(auth_driver_error)) {
+  use user <- result.try(
+    get_user_by_email_and_password(pevensie_auth, email, password)
+    |> result.map_error(LogInUserError),
+  )
 
   process.start(
     fn() {
@@ -625,22 +706,21 @@ pub fn log_in_user(
     False,
   )
 
-  create_session(
-    pevensie_auth,
-    user.id,
-    ip,
-    user_agent,
-    Some(24 * 60 * 60),
-    False,
-  )
+  create_session(pevensie_auth, user.id, ip, user_agent, Some(24 * 60 * 60))
   |> result.map(fn(session) { #(session, user) })
+  |> result.map_error(LogInSessionError)
 }
 
 // ----- Cookies ----- //
 
 /// Create a signed cookie for a session.
 pub fn create_session_cookie(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   session session: Session,
 ) -> Result(String, Nil) {
   let PevensieAuth(cookie_key:, ..) = pevensie_auth
@@ -650,11 +730,15 @@ pub fn create_session_cookie(
   Ok(session.id <> "|" <> hash)
 }
 
-// TODO: Improve errors
 /// Validate a signed cookie for a session. Returns the session ID if the
 /// cookie is valid.
 pub fn validate_session_cookie(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   cookie cookie: String,
 ) -> Result(String, Nil) {
   let PevensieAuth(cookie_key:, ..) = pevensie_auth
@@ -676,44 +760,64 @@ pub type OneTimeTokenType {
 }
 
 pub fn create_one_time_token(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   token_type token_type: OneTimeTokenType,
   ttl_seconds ttl_seconds: Int,
-) -> Result(String, Nil) {
+) -> Result(String, CreateError(auth_driver_error)) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.create_one_time_token(driver.driver, user_id, token_type, ttl_seconds)
 }
 
 pub fn validate_one_time_token(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   token_type token_type: OneTimeTokenType,
   token token: String,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, GetError(auth_driver_error)) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.validate_one_time_token(driver.driver, user_id, token_type, token)
 }
 
 pub fn use_one_time_token(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   token_type token_type: OneTimeTokenType,
   token token: String,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, UpdateError(auth_driver_error)) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.use_one_time_token(driver.driver, user_id, token_type, token)
 }
 
 pub fn delete_one_time_token(
-  pevensie_auth: PevensieAuth(auth_driver, user_metadata, Connected),
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
   user_id user_id: String,
   token_type token_type: OneTimeTokenType,
   token token: String,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, DeleteError(auth_driver_error)) {
   let PevensieAuth(driver:, ..) = pevensie_auth
 
   driver.delete_one_time_token(driver.driver, user_id, token_type, token)
@@ -721,38 +825,68 @@ pub fn delete_one_time_token(
 
 // ----- Auth Driver ----- //
 
-pub type AuthDriver(driver, user_metadata) {
+pub type AuthDriver(driver, driver_error, user_metadata) {
   AuthDriver(
     driver: driver,
-    connect: ConnectFunction(driver),
-    disconnect: DisconnectFunction(driver),
-    list_users: ListUsersFunction(driver, user_metadata),
-    insert_user: InsertUserFunction(driver, user_metadata),
-    update_user: UpdateUserFunction(driver, user_metadata),
-    delete_user: DeleteUserFunction(driver, user_metadata),
-    get_session: GetSessionFunction(driver),
-    create_session: CreateSessionFunction(driver),
-    delete_session: DeleteSessionFunction(driver),
-    create_one_time_token: CreateOneTimeTokenFunction(driver),
-    validate_one_time_token: ValidateOneTimeTokenFunction(driver),
-    use_one_time_token: UseOneTimeTokenFunction(driver),
-    delete_one_time_token: DeleteOneTimeTokenFunction(driver),
+    connect: ConnectFunction(driver, driver_error),
+    disconnect: DisconnectFunction(driver, driver_error),
+    list_users: ListUsersFunction(driver, driver_error, user_metadata),
+    create_user: CreateUserFunction(driver, driver_error, user_metadata),
+    update_user: UpdateUserFunction(driver, driver_error, user_metadata),
+    delete_user: DeleteUserFunction(driver, driver_error, user_metadata),
+    get_session: GetSessionFunction(driver, driver_error),
+    create_session: CreateSessionFunction(driver, driver_error),
+    delete_session: DeleteSessionFunction(driver, driver_error),
+    create_one_time_token: CreateOneTimeTokenFunction(driver, driver_error),
+    validate_one_time_token: ValidateOneTimeTokenFunction(driver, driver_error),
+    use_one_time_token: UseOneTimeTokenFunction(driver, driver_error),
+    delete_one_time_token: DeleteOneTimeTokenFunction(driver, driver_error),
   )
+}
+
+pub type GetError(auth_driver_error) {
+  GetDriverError(auth_driver_error)
+  GotTooFewRecords
+  GotTooManyRecords
+  GetInternalError(String)
+}
+
+pub type CreateError(auth_driver_error) {
+  CreateDriverError(auth_driver_error)
+  CreatedTooFewRecords
+  CreatedTooManyRecords
+  CreateHashError(argus.HashError)
+  CreateInternalError(String)
+}
+
+pub type UpdateError(auth_driver_error) {
+  UpdateDriverError(auth_driver_error)
+  UpdatedTooFewRecords
+  UpdatedTooManyRecords
+  UpdateHashError(argus.HashError)
+  UpdateInternalError(String)
+}
+
+pub type DeleteError(auth_driver_error) {
+  DeleteDriverError(auth_driver_error)
+  DeletedTooFewRecords
+  DeletedTooManyRecords
+  DeleteInternalError(String)
 }
 
 /// A function that retrieves users based on the given search fields.
 /// The first `Int` argument is the number of users to limit the search to,
 /// the second `Int` argument is the offset to use, and the `UserSearchFields`
 /// argument is the search fields to use.
-type ListUsersFunction(auth_driver, user_metadata) =
+type ListUsersFunction(auth_driver, auth_driver_error, user_metadata) =
   fn(auth_driver, Int, Int, UserSearchFields, Decoder(user_metadata)) ->
-    Result(List(User(user_metadata)), Nil)
+    Result(List(User(user_metadata)), GetError(auth_driver_error))
 
 /// A function that updates a user by the given field and value.
 /// The first string argument is the field to update, the second
 /// string argument is the value to update it to, and the third
 /// argument is the user update to apply.
-type UpdateUserFunction(auth_driver, user_metadata) =
+type UpdateUserFunction(auth_driver, auth_driver_error, user_metadata) =
   fn(
     auth_driver,
     String,
@@ -761,28 +895,28 @@ type UpdateUserFunction(auth_driver, user_metadata) =
     Decoder(user_metadata),
     Encoder(user_metadata),
   ) ->
-    Result(User(user_metadata), Nil)
+    Result(User(user_metadata), UpdateError(auth_driver_error))
 
 /// A function that inserts a user into the database.
 /// The first argument is the user to insert, the second
 /// argument is the decoder to use to decode the user metadata,
 /// and the third argument is the encoder to use to encode the
 /// user metadata.
-type InsertUserFunction(auth_driver, user_metadata) =
+type CreateUserFunction(auth_driver, auth_driver_error, user_metadata) =
   fn(
     auth_driver,
-    UserInsert(user_metadata),
+    UserCreate(user_metadata),
     Decoder(user_metadata),
     Encoder(user_metadata),
   ) ->
-    Result(User(user_metadata), Nil)
+    Result(User(user_metadata), CreateError(auth_driver_error))
 
 /// A function that deletes a user from the database.
 /// The first string argument is the field to delete by, and the
 /// second string argument is the value to delete it by.
-type DeleteUserFunction(auth_driver, user_metadata) =
+type DeleteUserFunction(auth_driver, auth_driver_error, user_metadata) =
   fn(auth_driver, String, String, Decoder(user_metadata)) ->
-    Result(User(user_metadata), Nil)
+    Result(User(user_metadata), DeleteError(auth_driver_error))
 
 /// A function that gets a session by ID.
 /// Args:
@@ -790,9 +924,9 @@ type DeleteUserFunction(auth_driver, user_metadata) =
 ///   - session_id: The ID of the session to get.
 ///   - ip: The IP address of the user.
 ///   - user_agent: The user agent of the user.
-type GetSessionFunction(auth_driver) =
+type GetSessionFunction(auth_driver, auth_driver_error) =
   fn(auth_driver, String, Option(IpAddress), Option(String)) ->
-    Result(Option(Session), Nil)
+    Result(Session, GetError(auth_driver_error))
 
 /// A function that creates a new session for a user.
 /// Args:
@@ -801,17 +935,16 @@ type GetSessionFunction(auth_driver) =
 ///   - ip: The IP address of the user.
 ///   - user_agent: The user agent of the user.
 ///   - ttl_seconds: The number of seconds the session should last for.
-///   - delete_other_sessions: Whether to delete any other sessions for the user.
-type CreateSessionFunction(auth_driver) =
-  fn(auth_driver, String, Option(IpAddress), Option(String), Option(Int), Bool) ->
-    Result(Session, Nil)
+type CreateSessionFunction(auth_driver, auth_driver_error) =
+  fn(auth_driver, String, Option(IpAddress), Option(String), Option(Int)) ->
+    Result(Session, CreateError(auth_driver_error))
 
 /// A function that deletes a session by ID.
 /// Args:
 ///   - auth_driver: The auth driver to use.
 ///   - session_id: The ID of the session to delete.
-type DeleteSessionFunction(auth_driver) =
-  fn(auth_driver, String) -> Result(Nil, Nil)
+type DeleteSessionFunction(auth_driver, auth_driver_error) =
+  fn(auth_driver, String) -> Result(Nil, DeleteError(auth_driver_error))
 
 /// A function that creates a one time token.
 /// Args:
@@ -821,8 +954,9 @@ type DeleteSessionFunction(auth_driver) =
 ///   - ttl_seconds: The number of seconds the token should last for.
 ///
 /// Returns: the token
-type CreateOneTimeTokenFunction(auth_driver) =
-  fn(auth_driver, String, OneTimeTokenType, Int) -> Result(String, Nil)
+type CreateOneTimeTokenFunction(auth_driver, auth_driver_error) =
+  fn(auth_driver, String, OneTimeTokenType, Int) ->
+    Result(String, CreateError(auth_driver_error))
 
 /// A function that checks if a one time token is still active.
 /// Args:
@@ -830,8 +964,9 @@ type CreateOneTimeTokenFunction(auth_driver) =
 ///   - user_id: The ID of the user to check the token for.
 ///   - token_type: The type of token to create.
 ///   - token: The token to check.
-type ValidateOneTimeTokenFunction(auth_driver) =
-  fn(auth_driver, String, OneTimeTokenType, String) -> Result(Nil, Nil)
+type ValidateOneTimeTokenFunction(auth_driver, auth_driver_error) =
+  fn(auth_driver, String, OneTimeTokenType, String) ->
+    Result(Nil, GetError(auth_driver_error))
 
 /// A function that uses a one time token, erroring if invalid.
 /// Args:
@@ -839,8 +974,9 @@ type ValidateOneTimeTokenFunction(auth_driver) =
 ///   - user_id: The ID of the user using the token.
 ///   - token_type: The type of token to use.
 ///   - token: The token to check.
-type UseOneTimeTokenFunction(auth_driver) =
-  fn(auth_driver, String, OneTimeTokenType, String) -> Result(Nil, Nil)
+type UseOneTimeTokenFunction(auth_driver, auth_driver_error) =
+  fn(auth_driver, String, OneTimeTokenType, String) ->
+    Result(Nil, UpdateError(auth_driver_error))
 
 /// A function that deletes a one time token.
 /// Args:
@@ -848,5 +984,6 @@ type UseOneTimeTokenFunction(auth_driver) =
 ///   - user_id: The ID of the user to delete the token for.
 ///   - token_type: The type of token to delete.
 ///   - token: The token to delete.
-type DeleteOneTimeTokenFunction(auth_driver) =
-  fn(auth_driver, String, OneTimeTokenType, String) -> Result(Nil, Nil)
+type DeleteOneTimeTokenFunction(auth_driver, auth_driver_error) =
+  fn(auth_driver, String, OneTimeTokenType, String) ->
+    Result(Nil, DeleteError(auth_driver_error))
