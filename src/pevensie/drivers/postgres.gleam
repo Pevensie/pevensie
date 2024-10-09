@@ -198,17 +198,14 @@ import gleam/set
 import gleam/string
 import glint
 import pevensie/auth.{
-  type AuthDriver, type OneTimeTokenType, AuthDriver, PasswordReset,
+  type AuthDriver, type OneTimeTokenType, type Session, type UpdateField,
+  type User, type UserCreate, type UserSearchFields, type UserUpdate, AuthDriver,
+  Ignore, PasswordReset, Session, Set, User,
 }
 import pevensie/cache.{type CacheDriver, CacheDriver}
 import pevensie/drivers
 import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
-import pevensie/session.{type Session, Session}
-import pevensie/user.{
-  type UpdateField, type User, type UserCreate, type UserSearchFields,
-  type UserUpdate, Ignore, Set, User, app_metadata_encoder,
-}
 import simplifile
 import snag
 
@@ -532,7 +529,7 @@ pub fn user_decoder(
         phone_number:,
         phone_number_confirmed_at:,
         last_sign_in:,
-        app_metadata: user.new_app_metadata(app_metadata_data),
+        app_metadata: auth.new_app_metadata(app_metadata_data),
         user_metadata:,
         banned_until:,
       ))
@@ -656,7 +653,7 @@ fn create_user(
           pgo.timestamp,
           user.phone_number_confirmed_at |> option.map(birl.to_erlang_datetime),
         ),
-        pgo.text(app_metadata_encoder(user.app_metadata) |> json.to_string),
+        pgo.text(auth.app_metadata_encoder(user.app_metadata) |> json.to_string),
         pgo.text(user_metadata_encoder(user.user_metadata) |> json.to_string),
       ],
       user_decoder(user_metadata_decoder),
@@ -736,7 +733,7 @@ fn update_user(
       "app_metadata",
       update_field_to_sql(user.app_metadata, record_to_pgo(
         _,
-        app_metadata_encoder,
+        auth.app_metadata_encoder,
       )),
     ),
     #(
