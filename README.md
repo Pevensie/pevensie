@@ -8,7 +8,7 @@ The backend application framework for Gleam!
 ## Getting Started
 
 ```sh
-gleam add pevensie@1
+gleam add pevensie
 ```
 
 Pevensie uses a driver-based architecture, so most modules in the framework will
