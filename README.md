@@ -102,7 +102,16 @@ Further documentation can be found at <https://hexdocs.pm/pevensie>.
 The Gleam community generally holds the (correct) opinion that libraries should not be
 released until they're ready. Thus, version numbers pre-v1 generally don't exist.
 
-However, Pevensie is starting with v0 versions for a couple of reasons.
+However, Pevensie is starting with v0 versions for a couple of reasons, which can be
+seen below.
+
+> [!CAUTION]
+> This is a beta version of Pevensie, and is not yet ready for production use.
+> Consider nothing to be stable, including database migrations. They, or the
+> format they use, may change at any time before v1.
+
+While the project is in v0, patch versions will be used for bug fixes, and minor
+versions will be used for new features, which may be backwards-incompatible.
 
 ### Security
 
@@ -125,6 +134,11 @@ to see how the community use the framework. Having a v0 means that both the
 public-facing API and the driver API can change quickly until some sort of stable
 configuration is reached.
 
+## Feedback and feature requests
+
+If you have any feedback or feature requests, please open an issue on the
+[Pevensie GitHub repository](https://github.com/Pevensie/pevensie).
+
 ## Development
 
 ```sh
@@ -134,7 +148,13 @@ gleam test  # Run the tests
 
 ### V1 checklist
 
+> [!NOTE]
+> This section will be replaced with a proper GitHub project board shortly.
+
+- [ ] Add more decoders for JSON representation of provided types
 - [ ] Decide on a stable architecture
 - [ ] Add more drivers (Redis, ETS)
 - [ ] Write unit and integration tests
 - [ ] Add Pevensie Jobs for async/background tasks
+- [ ] Email confirmation tokens
+- [ ] Email change tokens
