@@ -1,6 +1,6 @@
 name = "pevensie"
 version = "0.1.0"
-description = "The backend web toolkit for Gleam!"
+description = "The backend application framework for Gleam!"
 licences = ["MIT"]
 repository = { type = "github", user = "Pevensie", repo = "pevensie" }
 links = [{ title = "Website", href = "https://pevensie.dev" }]
