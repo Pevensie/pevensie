@@ -15,9 +15,9 @@ Pevensie uses a driver-based architecture, so most modules in the framework will
 require you to provide a driver for them to use. The drivers provided with
 Pevensie are:
 
-- [Postgres](/pevensie/drivers/postgres.html) - A driver for PostgreSQL
-- [Redis](/pevensie/drivers/redis.html) - A driver for Redis (coming soon)
-- [ETS](/pevensie/drivers/ets.html) - A driver for ETS, Erlang's in-memory key-value store (coming soon)
+- [Postgres](/pevensie/pevensie/drivers/postgres.html) - A driver for PostgreSQL
+- [Redis](/pevensie/pevensie/drivers/redis.html) - A driver for Redis (coming soon)
+- [ETS](/pevensie/pevensie/drivers/ets.html) - A driver for ETS, Erlang's in-memory key-value store (coming soon)
 
 The hope is that other first- and third-party drivers will be available in the
 future.
