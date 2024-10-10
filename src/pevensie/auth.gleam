@@ -869,6 +869,42 @@ pub fn set_user_password(
   )
 }
 
+/// Update a user's last sign in time.
+pub fn update_last_sign_in(
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
+  user_id user_id: String,
+  last_sign_in last_sign_in: Option(Time),
+) -> Result(User(user_metadata), UpdateError(auth_driver_error)) {
+  update_user(
+    pevensie_auth,
+    user_id,
+    UserUpdate(..default_user_update(), last_sign_in: Set(last_sign_in)),
+  )
+}
+
+/// Update user metadata.
+pub fn update_user_metadata(
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
+  user_id user_id: String,
+  user_metadata user_metadata: user_metadata,
+) -> Result(User(user_metadata), UpdateError(auth_driver_error)) {
+  update_user(
+    pevensie_auth,
+    user_id,
+    UserUpdate(..default_user_update(), user_metadata: Set(user_metadata)),
+  )
+}
+
 // ----- Session ----- //
 
 /// A Pevensie session. Sessions are used to identify users and
@@ -967,7 +1003,7 @@ pub type LogInError(auth_driver_error) {
 /// Log in a user using email and password.
 ///
 /// Assuming credentials are valid, this function will create a new session
-/// for the user, and update the user's last sign in time.
+/// for the user, and update the user's last sign in time to the current UTC time.
 ///
 /// Uses a session TTL of 24 hours, and does not delete any other sessions
 /// for the user.
@@ -989,13 +1025,7 @@ pub fn log_in_user(
   )
 
   process.start(
-    fn() {
-      update_user(
-        pevensie_auth,
-        user.id,
-        UserUpdate(..default_user_update(), last_sign_in: Set(Some(birl.now()))),
-      )
-    },
+    fn() { update_last_sign_in(pevensie_auth, user.id, Some(birl.utc_now())) },
     False,
   )
 
