@@ -105,7 +105,7 @@
 ////
 //// ## Implementation Details
 ////
-//// This driver uses the [gleam_pgo](https://github.com//pgo) library for interacting
+//// This driver uses the [gleam_pog](https://github.com/lpil/pog) library for interacting
 //// with Postgres.
 ////
 //// All IDs are stored as UUIDs, and are generated using using a UUIDv7 implementation
@@ -192,7 +192,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/pair
-import gleam/pgo
 import gleam/result
 import gleam/set
 import gleam/string
@@ -206,6 +205,7 @@ import pevensie/cache.{type CacheDriver, CacheDriver}
 import pevensie/drivers
 import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
+import pog
 import simplifile
 import snag
 
@@ -253,7 +253,7 @@ pub type PostgresConfig {
 
 /// The Postgres driver.
 pub opaque type Postgres {
-  Postgres(config: PostgresConfig, conn: Option(pgo.Connection))
+  Postgres(config: PostgresConfig, conn: Option(pog.Connection))
 }
 
 /// Errors that can occur when interacting with the Postgres driver.
@@ -300,8 +300,8 @@ pub fn default_config() -> PostgresConfig {
   )
 }
 
-fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
-  pgo.Config(
+fn postgres_config_to_pog_config(config: PostgresConfig) -> pog.Config {
+  pog.Config(
     host: config.host,
     port: config.port,
     database: config.database,
@@ -315,31 +315,50 @@ fn postgres_config_to_pgo_config(config: PostgresConfig) -> pgo.Config {
     idle_interval: config.idle_interval,
     trace: config.trace,
     ip_version: case config.ip_version {
-      Ipv4 -> pgo.Ipv4
-      Ipv6 -> pgo.Ipv6
+      Ipv4 -> pog.Ipv4
+      Ipv6 -> pog.Ipv6
     },
+    rows_as_map: False,
   )
 }
 
-fn pgo_query_error_to_postgres_error(err: pgo.QueryError) -> PostgresError {
+fn pog_query_error_to_postgres_error(err: pog.QueryError) -> PostgresError {
   case err {
-    pgo.PostgresqlError(code, name, message) ->
+    pog.PostgresqlError(code, name, message) ->
       PostgresqlError(code, name, message)
-    pgo.ConnectionUnavailable -> ConnectionUnavailable
-    pgo.ConstraintViolated(message, constraint, detail) ->
+    pog.ConnectionUnavailable -> ConnectionUnavailable
+    pog.ConstraintViolated(message, constraint, detail) ->
       ConstraintViolated(message, constraint, detail)
     _ ->
-      panic as "pgo Unexpected* error - should not occur if queries are written correctly"
+      panic as "pog Unexpected* error - should not occur if queries are written correctly"
   }
 }
 
-fn pgo_query_error_to_pevensie_error(
-  err: pgo.QueryError,
+fn pog_query_error_to_pevensie_error(
+  err: pog.QueryError,
   pevensie_error: fn(PostgresError) -> a,
 ) -> a {
   err
-  |> pgo_query_error_to_postgres_error
+  |> pog_query_error_to_postgres_error
   |> pevensie_error
+}
+
+fn birl_time_to_pog_timestamp(time: Time) -> pog.Timestamp {
+  let day = birl.get_day(time)
+  let time_of_day = birl.get_time_of_day(time)
+  // birl doesn't give us a nice easy way to get microseconds, so we convert to unix
+  // microseconds and take the modulo with 1_000_000 to get the microseconds
+  let assert Ok(microseconds) =
+    birl.to_unix_micro(time) |> int.modulo(1_000_000)
+  pog.Timestamp(
+    date: pog.Date(year: day.year, month: day.month, day: day.date),
+    time: pog.Time(
+      hours: time_of_day.hour,
+      minutes: time_of_day.minute,
+      seconds: time_of_day.second,
+      microseconds:,
+    ),
+  )
 }
 
 // ----- Auth Driver ----- //
@@ -396,8 +415,8 @@ fn connect(
     Postgres(config, None) -> {
       let conn =
         config
-        |> postgres_config_to_pgo_config
-        |> pgo.connect
+        |> postgres_config_to_pog_config
+        |> pog.connect
 
       Ok(Postgres(config, Some(conn)))
     }
@@ -411,7 +430,7 @@ fn disconnect(
 ) -> Result(Postgres, drivers.DisconnectError(PostgresError)) {
   case driver {
     Postgres(config, Some(conn)) -> {
-      let _ = pgo.disconnect(conn)
+      let _ = pog.disconnect(conn)
       Ok(Postgres(config, None))
     }
     Postgres(_, None) -> Error(drivers.NotConnected)
@@ -572,9 +591,9 @@ fn list_users(
     |> list.index_map(fn(field, index) {
       #(
         // Filter SQL
-        field.0 <> " like any($" <> int.to_string(index + 1) <> ")",
+        field.0 <> "::text like any($" <> int.to_string(index + 1) <> ")",
         // Filter values
-        field.1 |> option.unwrap([]) |> pgo.array,
+        field.1 |> option.unwrap([]) |> pog.array,
       )
     })
 
@@ -591,16 +610,17 @@ fn list_users(
     limit " <> int.to_string(limit) <> "
     offset " <> int.to_string(offset)
 
-  pgo.execute(
-    sql,
-    conn,
-    filter_fields |> list.map(pair.second),
-    user_decoder(user_metadata_decoder),
-  )
+  filter_fields
+  |> list.fold(pog.query(sql), fn(query, field) {
+    query
+    |> pog.parameter(field.1)
+  })
+  |> pog.returning(user_decoder(user_metadata_decoder))
+  |> pog.execute(conn)
   |> result.map(fn(response) { response.rows })
   |> result.map_error(fn(err) {
     err
-    |> pgo_query_error_to_postgres_error
+    |> pog_query_error_to_postgres_error
     |> auth.GetDriverError
   })
 }
@@ -637,28 +657,28 @@ fn create_user(
       " <> user_select_fields
 
   let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [
-        pgo.nullable(pgo.text, user.role),
-        pgo.text(user.email),
-        pgo.nullable(pgo.text, user.password_hash),
-        pgo.nullable(
-          pgo.timestamp,
-          user.email_confirmed_at |> option.map(birl.to_erlang_datetime),
-        ),
-        pgo.nullable(pgo.text, user.phone_number),
-        pgo.nullable(
-          pgo.timestamp,
-          user.phone_number_confirmed_at |> option.map(birl.to_erlang_datetime),
-        ),
-        pgo.text(auth.app_metadata_encoder(user.app_metadata) |> json.to_string),
-        pgo.text(user_metadata_encoder(user.user_metadata) |> json.to_string),
-      ],
-      user_decoder(user_metadata_decoder),
-    )
-    |> result.map_error(pgo_query_error_to_pevensie_error(
+    pog.query(sql)
+    |> pog.parameter(pog.nullable(pog.text, user.role))
+    |> pog.parameter(pog.text(user.email))
+    |> pog.parameter(pog.nullable(pog.text, user.password_hash))
+    |> pog.parameter(pog.nullable(
+      pog.timestamp,
+      user.email_confirmed_at |> option.map(birl_time_to_pog_timestamp),
+    ))
+    |> pog.parameter(pog.nullable(pog.text, user.phone_number))
+    |> pog.parameter(pog.nullable(
+      pog.timestamp,
+      user.phone_number_confirmed_at |> option.map(birl_time_to_pog_timestamp),
+    ))
+    |> pog.parameter(pog.text(
+      auth.app_metadata_encoder(user.app_metadata) |> json.to_string,
+    ))
+    |> pog.parameter(pog.text(
+      user_metadata_encoder(user.user_metadata) |> json.to_string,
+    ))
+    |> pog.returning(user_decoder(user_metadata_decoder))
+    |> pog.execute(conn)
+    |> result.map_error(pog_query_error_to_pevensie_error(
       _,
       auth.CreateDriverError,
     ))
@@ -673,8 +693,8 @@ fn create_user(
 
 fn update_field_to_sql(
   field: UpdateField(a),
-  sql_type: fn(a) -> pgo.Value,
-) -> UpdateField(pgo.Value) {
+  sql_type: fn(a) -> pog.Value,
+) -> UpdateField(pog.Value) {
   case field {
     Set(value) -> Set(sql_type(value))
     Ignore -> Ignore
@@ -691,54 +711,54 @@ fn update_user(
 ) -> Result(User(user_metadata), auth.UpdateError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
-  let optional_timestamp_to_pgo = fn(timestamp: Option(Time)) -> pgo.Value {
+  let optional_timestamp_to_pog = fn(timestamp: Option(Time)) -> pog.Value {
     timestamp
-    |> option.map(birl.to_erlang_datetime)
-    |> pgo.nullable(pgo.timestamp, _)
+    |> option.map(birl_time_to_pog_timestamp)
+    |> pog.nullable(pog.timestamp, _)
   }
 
-  let record_to_pgo = fn(record: a, encoder: Encoder(a)) -> pgo.Value {
-    pgo.text(encoder(record) |> json.to_string)
+  let record_to_pog = fn(record: a, encoder: Encoder(a)) -> pog.Value {
+    pog.text(encoder(record) |> json.to_string)
   }
 
   // Create a list of fields to update, filter by those that are set,
   // then create SQL to update those fields.
-  let fields: List(#(String, UpdateField(pgo.Value))) = [
-    #("role", update_field_to_sql(user.role, pgo.nullable(pgo.text, _))),
-    #("email", update_field_to_sql(user.email, pgo.text)),
+  let fields: List(#(String, UpdateField(pog.Value))) = [
+    #("role", update_field_to_sql(user.role, pog.nullable(pog.text, _))),
+    #("email", update_field_to_sql(user.email, pog.text)),
     #(
       "password_hash",
-      update_field_to_sql(user.password_hash, pgo.nullable(pgo.text, _)),
+      update_field_to_sql(user.password_hash, pog.nullable(pog.text, _)),
     ),
     #(
       "email_confirmed_at",
-      update_field_to_sql(user.email_confirmed_at, optional_timestamp_to_pgo),
+      update_field_to_sql(user.email_confirmed_at, optional_timestamp_to_pog),
     ),
     #(
       "phone_number",
-      update_field_to_sql(user.phone_number, pgo.nullable(pgo.text, _)),
+      update_field_to_sql(user.phone_number, pog.nullable(pog.text, _)),
     ),
     #(
       "phone_number_confirmed_at",
       update_field_to_sql(
         user.phone_number_confirmed_at,
-        optional_timestamp_to_pgo,
+        optional_timestamp_to_pog,
       ),
     ),
     #(
       "last_sign_in",
-      update_field_to_sql(user.last_sign_in, optional_timestamp_to_pgo),
+      update_field_to_sql(user.last_sign_in, optional_timestamp_to_pog),
     ),
     #(
       "app_metadata",
-      update_field_to_sql(user.app_metadata, record_to_pgo(
+      update_field_to_sql(user.app_metadata, record_to_pog(
         _,
         auth.app_metadata_encoder,
       )),
     ),
     #(
       "user_metadata",
-      update_field_to_sql(user.user_metadata, record_to_pgo(
+      update_field_to_sql(user.user_metadata, record_to_pog(
         _,
         user_metadata_encoder,
       )),
@@ -780,13 +800,15 @@ fn update_user(
     returning " <> user_select_fields
 
   let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      list.append(update_values, [pgo.text(value)]),
-      user_decoder(user_metadata_decoder),
-    )
-    |> result.map_error(pgo_query_error_to_pevensie_error(
+    update_values
+    |> list.fold(pog.query(sql), fn(query, value) {
+      query
+      |> pog.parameter(value)
+    })
+    |> pog.parameter(pog.text(value))
+    |> pog.returning(user_decoder(user_metadata_decoder))
+    |> pog.execute(conn)
+    |> result.map_error(pog_query_error_to_pevensie_error(
       _,
       auth.UpdateDriverError,
     ))
@@ -814,13 +836,11 @@ fn delete_user(
     returning " <> user_select_fields
 
   let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [pgo.text(value)],
-      user_decoder(user_metadata_decoder),
-    )
-    |> result.map_error(pgo_query_error_to_pevensie_error(
+    pog.query(sql)
+    |> pog.parameter(pog.text(value))
+    |> pog.returning(user_decoder(user_metadata_decoder))
+    |> pog.execute(conn)
+    |> result.map_error(pog_query_error_to_pevensie_error(
       _,
       auth.DeleteDriverError,
     ))
@@ -899,54 +919,65 @@ fn get_session(
 ) -> Result(Session, auth.GetError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
+  // expires_at is true only if the expiration time is
+  // set and has passed
   let sql = "
     select
       " <> session_select_fields <> ",
-      -- Returns true only if the exporation time is
-      -- set and has passed
       (expires_at is not null and expires_at < now()) as expired
     from pevensie.\"session\"
     where id = $1
     "
 
   let additional_fields = [
-    #(
-      case ip {
-        None -> "ip is $"
-        Some(_) -> "ip = $"
-      },
-      pgo.nullable(pgo.text, ip |> option.map(net.format_ip_address)),
-    ),
-    #(
-      case user_agent {
-        None -> "user_agent is $"
-        Some(_) -> "user_agent = $"
-      },
-      pgo.nullable(pgo.text, user_agent),
-    ),
+    case ip {
+      None -> #("ip is null", None)
+      Some(_) -> #(
+        "ip = $",
+        Some(pog.nullable(pog.text, ip |> option.map(net.format_ip_address))),
+      )
+    },
+    case user_agent {
+      None -> #("user_agent is null", None)
+      Some(_) -> #("user_agent = $", Some(pog.nullable(pog.text, user_agent)))
+    },
   ]
 
-  let sql =
-    list.index_fold(additional_fields, sql, fn(sql, field, index) {
-      sql <> " and " <> field.0 <> int.to_string(index + 2)
+  let #(sql, _) =
+    // Start with counter at 2 as we already have one param for session ID
+    list.fold(additional_fields, #(sql, 2), fn(sql_and_counter, field) {
+      let #(sql, counter) = sql_and_counter
+      case field {
+        #(stmt, None) -> #(sql <> " and " <> stmt, counter)
+        #(stmt, Some(_)) -> #(
+          sql <> " and " <> stmt <> int.to_string(counter),
+          counter + 1,
+        )
+      }
+    })
+
+  let query =
+    pog.query(sql)
+    |> pog.parameter(pog.text(session_id))
+
+  let query =
+    additional_fields
+    |> list.fold(query, fn(query, field) {
+      case field {
+        #(_, Some(param)) -> query |> pog.parameter(param)
+        _ -> query
+      }
     })
 
   let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [
-        pgo.text(session_id),
-        pgo.nullable(pgo.text, ip |> option.map(net.format_ip_address)),
-        pgo.nullable(pgo.text, user_agent),
-      ],
-      dynamic.decode2(
-        fn(session, expired) { #(session, expired) },
-        session_decoder(),
-        dynamic.element(1, dynamic.bool),
-      ),
-    )
-    |> result.map_error(pgo_query_error_to_pevensie_error(
+    query
+    |> pog.returning(fn(data) {
+      use session <- result.try(session_decoder()(data))
+      use expired <- result.try(dynamic.element(6, dynamic.bool)(data))
+      Ok(#(session, expired))
+    })
+    |> pog.execute(conn)
+    |> result.map_error(pog_query_error_to_pevensie_error(
       _,
       auth.GetDriverError,
     ))
@@ -981,14 +1012,14 @@ fn get_session(
 //     returning id
 //   "
 //
-//   pgo.execute(
+//   pog.execute(
 //     sql,
 //     conn,
-//     [pgo.text(user_id), pgo.text(ignored_session_id)],
+//     [pog.text(user_id), pog.text(ignored_session_id)],
 //     dynamic.dynamic,
 //   )
 //   |> result.replace(Nil)
-//   |> result.map_error(pgo_query_error_to_pevensie_error(
+//   |> result.map_error(pog_query_error_to_pevensie_error(
 //     _,
 //     auth.DeleteDriverError,
 //   ))
@@ -1009,7 +1040,7 @@ fn create_session(
       "now() + interval '" <> int.to_string(ttl_seconds) <> " seconds'"
   }
 
-  // inet is a weird type and doesn't work with pgo,
+  // inet is a weird type and doesn't work with pog,
   // so we have to cast it to text.
   // This is fine because the `IpAddress` type is guaranteed
   // to be a valid IP address, so there's no chance of
@@ -1037,13 +1068,12 @@ fn create_session(
       " <> session_select_fields
 
   let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [pgo.text(user_id), pgo.nullable(pgo.text, user_agent)],
-      session_decoder(),
-    )
-    |> result.map_error(pgo_query_error_to_pevensie_error(
+    pog.query(sql)
+    |> pog.parameter(pog.text(user_id))
+    |> pog.parameter(pog.nullable(pog.text, user_agent))
+    |> pog.returning(session_decoder())
+    |> pog.execute(conn)
+    |> result.map_error(pog_query_error_to_pevensie_error(
       _,
       auth.CreateDriverError,
     ))
@@ -1069,9 +1099,11 @@ fn delete_session(
     returning id
       "
 
-  pgo.execute(sql, conn, [pgo.text(session_id)], dynamic.dynamic)
+  pog.query(sql)
+  |> pog.parameter(pog.text(session_id))
+  |> pog.execute(conn)
   |> result.replace(Nil)
-  |> result.map_error(pgo_query_error_to_pevensie_error(
+  |> result.map_error(pog_query_error_to_pevensie_error(
     _,
     auth.DeleteDriverError,
   ))
@@ -1111,19 +1143,14 @@ fn create_one_time_token(
   values ($1, $2, $3, now() + interval '$4 seconds')
     "
 
-  pgo.execute(
-    sql,
-    conn,
-    [
-      pgo.text(user_id),
-      pgo.text(one_time_token_type_to_pg_enum(token_type)),
-      pgo.text(token_hash),
-      pgo.text(int.to_string(ttl_seconds)),
-    ],
-    dynamic.dynamic,
-  )
+  pog.query(sql)
+  |> pog.parameter(pog.text(user_id))
+  |> pog.parameter(pog.text(one_time_token_type_to_pg_enum(token_type)))
+  |> pog.parameter(pog.text(token_hash))
+  |> pog.parameter(pog.text(int.to_string(ttl_seconds)))
+  |> pog.execute(conn)
   |> result.replace(token)
-  |> result.map_error(pgo_query_error_to_pevensie_error(
+  |> result.map_error(pog_query_error_to_pevensie_error(
     _,
     auth.CreateDriverError,
   ))
@@ -1153,18 +1180,13 @@ fn validate_one_time_token(
     and expires_at < now() -- USE THIS TO CREATE AN ERROR LATER?
     "
 
-  pgo.execute(
-    sql,
-    conn,
-    [
-      pgo.text(user_id),
-      pgo.text(one_time_token_type_to_pg_enum(token_type)),
-      pgo.text(token_hash),
-    ],
-    dynamic.dynamic,
-  )
+  pog.query(sql)
+  |> pog.parameter(pog.text(user_id))
+  |> pog.parameter(pog.text(one_time_token_type_to_pg_enum(token_type)))
+  |> pog.parameter(pog.text(token_hash))
+  |> pog.execute(conn)
   |> result.replace(Nil)
-  |> result.map_error(pgo_query_error_to_pevensie_error(_, auth.GetDriverError))
+  |> result.map_error(pog_query_error_to_pevensie_error(_, auth.GetDriverError))
 }
 
 fn use_one_time_token(
@@ -1193,18 +1215,13 @@ fn use_one_time_token(
   returning id
     "
 
-  pgo.execute(
-    sql,
-    conn,
-    [
-      pgo.text(user_id),
-      pgo.text(one_time_token_type_to_pg_enum(token_type)),
-      pgo.text(token_hash),
-    ],
-    dynamic.dynamic,
-  )
+  pog.query(sql)
+  |> pog.parameter(pog.text(user_id))
+  |> pog.parameter(pog.text(one_time_token_type_to_pg_enum(token_type)))
+  |> pog.parameter(pog.text(token_hash))
+  |> pog.execute(conn)
   |> result.replace(Nil)
-  |> result.map_error(pgo_query_error_to_pevensie_error(
+  |> result.map_error(pog_query_error_to_pevensie_error(
     _,
     auth.UpdateDriverError,
   ))
@@ -1233,18 +1250,13 @@ fn delete_one_time_token(
   returning id
     "
 
-  pgo.execute(
-    sql,
-    conn,
-    [
-      pgo.text(user_id),
-      pgo.text(one_time_token_type_to_pg_enum(token_type)),
-      pgo.text(token_hash),
-    ],
-    dynamic.dynamic,
-  )
+  pog.query(sql)
+  |> pog.parameter(pog.text(user_id))
+  |> pog.parameter(pog.text(one_time_token_type_to_pg_enum(token_type)))
+  |> pog.parameter(pog.text(token_hash))
+  |> pog.execute(conn)
   |> result.replace(Nil)
-  |> result.map_error(pgo_query_error_to_pevensie_error(
+  |> result.map_error(pog_query_error_to_pevensie_error(
     _,
     auth.DeleteDriverError,
   ))
@@ -1311,14 +1323,13 @@ fn set_in_cache(
     )
     on conflict (resource_type, key) do update set value = $3"
 
-  pgo.execute(
-    sql,
-    conn,
-    [pgo.text(resource_type), pgo.text(key), pgo.text(value)],
-    dynamic.dynamic,
-  )
+  pog.query(sql)
+  |> pog.parameter(pog.text(resource_type))
+  |> pog.parameter(pog.text(key))
+  |> pog.parameter(pog.text(value))
+  |> pog.execute(conn)
   |> result.replace(Nil)
-  |> result.map_error(pgo_query_error_to_pevensie_error(_, cache.SetDriverError))
+  |> result.map_error(pog_query_error_to_pevensie_error(_, cache.SetDriverError))
 }
 
 fn get_from_cache(
@@ -1331,7 +1342,7 @@ fn get_from_cache(
   let sql =
     "
     select
-      value::text, 
+      value::text,
       -- Returns true only if the exporation time is
       -- set and has passed
       (expires_at is not null and expires_at < now()) as expired
@@ -1339,17 +1350,16 @@ fn get_from_cache(
     where resource_type = $1 and key = $2"
 
   let query_result =
-    pgo.execute(
-      sql,
-      conn,
-      [pgo.text(resource_type), pgo.text(key)],
-      dynamic.decode2(
-        fn(value, expired) { #(value, expired) },
-        dynamic.element(0, dynamic.string),
-        dynamic.element(1, dynamic.bool),
-      ),
-    )
-    |> result.map_error(pgo_query_error_to_pevensie_error(
+    pog.query(sql)
+    |> pog.parameter(pog.text(resource_type))
+    |> pog.parameter(pog.text(key))
+    |> pog.returning(dynamic.decode2(
+      fn(value, expired) { #(value, expired) },
+      dynamic.element(0, dynamic.string),
+      dynamic.element(1, dynamic.bool),
+    ))
+    |> pog.execute(conn)
+    |> result.map_error(pog_query_error_to_pevensie_error(
       _,
       cache.GetDriverError,
     ))
@@ -1386,14 +1396,12 @@ fn delete_from_cache(
     delete from pevensie.\"cache\"
     where resource_type = $1 and key = $2"
 
-  pgo.execute(
-    sql,
-    conn,
-    [pgo.text(resource_type), pgo.text(key)],
-    dynamic.dynamic,
-  )
+  pog.query(sql)
+  |> pog.parameter(pog.text(resource_type))
+  |> pog.parameter(pog.text(key))
+  |> pog.execute(conn)
   |> result.replace(Nil)
-  |> result.map_error(pgo_query_error_to_pevensie_error(
+  |> result.map_error(pog_query_error_to_pevensie_error(
     _,
     cache.DeleteDriverError,
   ))
@@ -1404,14 +1412,13 @@ fn add_error_context(error: String, context: String) {
   context <> ": " <> error
 }
 
-fn check_pevensie_schema_exists(tx: pgo.Connection) -> Result(Bool, String) {
+fn check_pevensie_schema_exists(tx: pog.Connection) -> Result(Bool, String) {
   let query_result =
-    pgo.execute(
+    pog.query(
       "select schema_name from information_schema.schemata where schema_name = 'pevensie'",
-      tx,
-      [],
-      dynamic.element(0, of: dynamic.string),
     )
+    |> pog.returning(dynamic.element(0, of: dynamic.string))
+    |> pog.execute(tx)
     |> result.map_error(string.inspect)
 
   use response <- result.try(query_result)
@@ -1423,19 +1430,17 @@ fn check_pevensie_schema_exists(tx: pgo.Connection) -> Result(Bool, String) {
 }
 
 fn get_module_version(
-  tx: pgo.Connection,
+  tx: pog.Connection,
   module: String,
 ) -> Result(Option(String), String) {
   let query_result =
-    pgo.execute(
-      // pgo no like enums
+    pog.query(
       "select version::text from pevensie.module_version where module = '"
-        <> module
-        <> "' limit 1",
-      tx,
-      [],
-      dynamic.element(0, of: dynamic.string),
+      <> module
+      <> "' limit 1",
     )
+    |> pog.returning(dynamic.element(0, of: dynamic.string))
+    |> pog.execute(tx)
     |> result.map_error(string.inspect)
 
   use response <- result.try(query_result)
@@ -1520,14 +1525,14 @@ do update set version = date '" <> new_version <> "';\n"
 }
 
 fn apply_migrations_for_module(
-  tx: pgo.Connection,
+  tx: pog.Connection,
   module: String,
   migration_sql: String,
 ) -> Result(Nil, String) {
   io.println_error("Applying migrations for module '" <> module <> "'")
 
   use last_char <- result.try(
-    string.last(migration_sql |> string.trim_right)
+    string.last(migration_sql |> string.trim_end)
     |> result.replace_error("Empty migratino file"),
   )
 
@@ -1535,12 +1540,14 @@ fn apply_migrations_for_module(
     ";" -> migration_sql
     _ -> migration_sql <> ";"
   }
-  // pgo doesn't allow executing multiple statements, so
+  // pog doesn't allow executing multiple statements, so
   // wrap in a do block
   let sql = "do $pevensiemigration$ begin" <> sql <> " end;$pevensiemigration$"
 
   let query_result =
-    pgo.execute(sql, tx, [], fn(_) { Ok(Nil) })
+    pog.query(sql)
+    |> pog.returning(fn(_) { Ok(Nil) })
+    |> pog.execute(tx)
     |> result.map_error(string.inspect)
 
   use _ <- result.try(query_result)
@@ -1549,7 +1556,7 @@ fn apply_migrations_for_module(
 }
 
 fn handle_module_migration(
-  tx: pgo.Connection,
+  tx: pog.Connection,
   module: String,
   apply: Bool,
 ) -> Result(Nil, String) {
@@ -1656,16 +1663,16 @@ fn migrate_command() {
   })
 
   use config <- result.try(
-    pgo.url_config(connection_string)
+    pog.url_config(connection_string)
     |> result.replace_error(
       snag.Snag(issue: "Invalid Postgres connection string", cause: [
         "invalid connection string",
       ]),
     ),
   )
-  let conn = pgo.connect(config)
+  let conn = pog.connect(config)
   let transaction_result =
-    pgo.transaction(conn, fn(tx) {
+    pog.transaction(conn, fn(tx) {
       use _ <- result.try(handle_module_migration(tx, "base", apply))
 
       let migration_result =
@@ -1686,9 +1693,9 @@ fn migrate_command() {
     })
   case transaction_result {
     Ok(_) -> Ok(Nil)
-    Error(pgo.TransactionRolledBack(msg)) ->
+    Error(pog.TransactionRolledBack(msg)) ->
       Error(snag.Snag(issue: msg, cause: ["transaction rolled back"]))
-    Error(pgo.TransactionQueryError(err)) ->
+    Error(pog.TransactionQueryError(err)) ->
       Error(
         snag.Snag(issue: "Query error: " <> string.inspect(err), cause: [
           "query error",
