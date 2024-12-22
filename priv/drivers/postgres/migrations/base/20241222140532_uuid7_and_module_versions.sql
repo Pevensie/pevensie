@@ -1,7 +1,7 @@
 -- Initial base migration for Pevensie.
 --
 -- Sets up the `pevensie` schema, useful functions (UUIDv7)
--- and the `module_version` table. 
+-- and the `module_version` table.
 -- Schema
 create schema if not exists pevensie;
 
@@ -37,7 +37,7 @@ declare
 	c_milli double precision := 10^3;  -- 1 000
 	c_micro double precision := 10^6;  -- 1 000 000
 	c_scale double precision := 4.096; -- 4.0 * (1024 / 1000)
-	
+
 	c_version bigint := x'0000000000007000'::bigint; -- RFC-9562 version: b'0111...'
 	c_variant bigint := x'8000000000000000'::bigint; -- RFC-9562 variant: b'10xx...'
 begin
@@ -68,5 +68,5 @@ create type pevensie."module" as enum (
 
 create table if not exists pevensie."module_version" (
   module pevensie."module" not null primary key,
-  version date not null
+  version timestamptz not null
 );

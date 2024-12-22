@@ -87,7 +87,7 @@
 //// | ---------- | ------------- |
 //// | Any resource ID | `UUID` (generated as UUIDv7) |
 //// | `String` | `text` |
-//// | `birl.Time` | `timestamptz` |
+//// | `tempo.DateTime` | `timestamptz` |
 //// | Record types (e.g. `user_metadata`) | `jsonb` |
 //// | `pevensie/net.IpAddr` | `inet` |
 ////
@@ -176,7 +176,6 @@
 //// tables for use with the `user_decoder` and `session_decoder` functions.
 
 import argv
-import birl.{type Time}
 import decode
 import filepath
 import gleam/bit_array
@@ -208,6 +207,11 @@ import pevensie/net.{type IpAddress}
 import pog
 import simplifile
 import snag
+import tempo.{type DateTime}
+import tempo/date
+import tempo/datetime
+import tempo/month
+import tempo/time
 
 /// An IP version for a [`PostgresConfig`](#PostgresConfig).
 pub type IpVersion {
@@ -248,6 +252,7 @@ pub type PostgresConfig {
     idle_interval: Int,
     trace: Bool,
     ip_version: IpVersion,
+    default_timeout: Int,
   )
 }
 
@@ -297,6 +302,7 @@ pub fn default_config() -> PostgresConfig {
     idle_interval: 1000,
     trace: False,
     ip_version: Ipv4,
+    default_timeout: 5000,
   )
 }
 
@@ -307,7 +313,10 @@ fn postgres_config_to_pog_config(config: PostgresConfig) -> pog.Config {
     database: config.database,
     user: config.user,
     password: config.password,
-    ssl: config.ssl,
+    ssl: case config.ssl {
+      True -> pog.SslVerified
+      False -> pog.SslDisabled
+    },
     connection_parameters: config.connection_parameters,
     pool_size: config.pool_size,
     queue_target: config.queue_target,
@@ -319,6 +328,7 @@ fn postgres_config_to_pog_config(config: PostgresConfig) -> pog.Config {
       Ipv6 -> pog.Ipv6
     },
     rows_as_map: False,
+    default_timeout: config.default_timeout,
   )
 }
 
@@ -343,20 +353,21 @@ fn pog_query_error_to_pevensie_error(
   |> pevensie_error
 }
 
-fn birl_time_to_pog_timestamp(time: Time) -> pog.Timestamp {
-  let day = birl.get_day(time)
-  let time_of_day = birl.get_time_of_day(time)
-  // birl doesn't give us a nice easy way to get microseconds, so we convert to unix
-  // microseconds and take the modulo with 1_000_000 to get the microseconds
-  let assert Ok(microseconds) =
-    birl.to_unix_micro(time) |> int.modulo(1_000_000)
+fn tempo_datetime_to_pog_timestamp(datetime: DateTime) -> pog.Timestamp {
+  let date = datetime.get_date(datetime)
+  let time = datetime.get_time(datetime)
+
   pog.Timestamp(
-    date: pog.Date(year: day.year, month: day.month, day: day.date),
+    date: pog.Date(
+      year: date.get_year(date),
+      month: date.get_month(date) |> month.to_int,
+      day: date.get_day(date),
+    ),
     time: pog.Time(
-      hours: time_of_day.hour,
-      minutes: time_of_day.minute,
-      seconds: time_of_day.second,
-      microseconds:,
+      hours: time.get_hour(time),
+      minutes: time.get_minute(time),
+      seconds: time.get_second(time),
+      microseconds: time.get_nanosecond(time) / 1000,
     ),
   )
 }
@@ -478,26 +489,27 @@ pub fn user_decoder(
       use user_metadata_string <- decode.parameter
       use banned_until_tuple <- decode.parameter
 
-      let created_at = birl.from_unix_micro(created_at_tuple)
-      let updated_at = birl.from_unix_micro(updated_at_tuple)
+      let created_at = datetime.from_unix_micro_utc(created_at_tuple)
+      let updated_at = datetime.from_unix_micro_utc(updated_at_tuple)
       let deleted_at = case deleted_at_tuple {
         None -> None
-        Some(deleted_at_tuple) -> Some(birl.from_unix_micro(deleted_at_tuple))
+        Some(deleted_at_tuple) ->
+          Some(datetime.from_unix_micro_utc(deleted_at_tuple))
       }
       let email_confirmed_at = case email_confirmed_at_tuple {
         None -> None
         Some(email_confirmed_at_tuple) ->
-          Some(birl.from_unix_micro(email_confirmed_at_tuple))
+          Some(datetime.from_unix_micro_utc(email_confirmed_at_tuple))
       }
       let phone_number_confirmed_at = case phone_number_confirmed_at_tuple {
         None -> None
         Some(phone_number_confirmed_at_tuple) ->
-          Some(birl.from_unix_micro(phone_number_confirmed_at_tuple))
+          Some(datetime.from_unix_micro_utc(phone_number_confirmed_at_tuple))
       }
       let last_sign_in = case last_sign_in_tuple {
         None -> None
         Some(last_sign_in_tuple) ->
-          Some(birl.from_unix_micro(last_sign_in_tuple))
+          Some(datetime.from_unix_micro_utc(last_sign_in_tuple))
       }
 
       use app_metadata_data <- result.try(
@@ -533,7 +545,7 @@ pub fn user_decoder(
       let banned_until = case banned_until_tuple {
         None -> None
         Some(banned_until_tuple) ->
-          Some(birl.from_unix_micro(banned_until_tuple))
+          Some(datetime.from_unix_micro_utc(banned_until_tuple))
       }
 
       Ok(User(
@@ -593,7 +605,7 @@ fn list_users(
         // Filter SQL
         field.0 <> "::text like any($" <> int.to_string(index + 1) <> ")",
         // Filter values
-        field.1 |> option.unwrap([]) |> pog.array,
+        field.1 |> option.unwrap([]) |> pog.array(pog.text, _),
       )
     })
 
@@ -663,12 +675,13 @@ fn create_user(
     |> pog.parameter(pog.nullable(pog.text, user.password_hash))
     |> pog.parameter(pog.nullable(
       pog.timestamp,
-      user.email_confirmed_at |> option.map(birl_time_to_pog_timestamp),
+      user.email_confirmed_at |> option.map(tempo_datetime_to_pog_timestamp),
     ))
     |> pog.parameter(pog.nullable(pog.text, user.phone_number))
     |> pog.parameter(pog.nullable(
       pog.timestamp,
-      user.phone_number_confirmed_at |> option.map(birl_time_to_pog_timestamp),
+      user.phone_number_confirmed_at
+        |> option.map(tempo_datetime_to_pog_timestamp),
     ))
     |> pog.parameter(pog.text(
       auth.app_metadata_encoder(user.app_metadata) |> json.to_string,
@@ -711,9 +724,9 @@ fn update_user(
 ) -> Result(User(user_metadata), auth.UpdateError(PostgresError)) {
   let assert Postgres(_, Some(conn)) = driver
 
-  let optional_timestamp_to_pog = fn(timestamp: Option(Time)) -> pog.Value {
+  let optional_timestamp_to_pog = fn(timestamp: Option(DateTime)) -> pog.Value {
     timestamp
-    |> option.map(birl_time_to_pog_timestamp)
+    |> option.map(tempo_datetime_to_pog_timestamp)
     |> pog.nullable(pog.timestamp, _)
   }
 
@@ -875,10 +888,11 @@ pub fn session_decoder() -> Decoder(Session) {
       use ip_string <- decode.parameter
       use user_agent <- decode.parameter
 
-      let created_at = birl.from_unix_micro(created_at_tuple)
+      let created_at = datetime.from_unix_micro_utc(created_at_tuple)
       let expires_at = case expires_at_tuple {
         None -> None
-        Some(expires_at_tuple) -> Some(birl.from_unix_micro(expires_at_tuple))
+        Some(expires_at_tuple) ->
+          Some(datetime.from_unix_micro_utc(expires_at_tuple))
       }
 
       use ip <- result.try(case ip_string {
@@ -1432,14 +1446,14 @@ fn check_pevensie_schema_exists(tx: pog.Connection) -> Result(Bool, String) {
 fn get_module_version(
   tx: pog.Connection,
   module: String,
-) -> Result(Option(String), String) {
+) -> Result(Option(DateTime), String) {
   let query_result =
     pog.query(
       "select version::text from pevensie.module_version where module = '"
       <> module
       <> "' limit 1",
     )
-    |> pog.returning(dynamic.element(0, of: dynamic.string))
+    |> pog.returning(dynamic.element(0, of: datetime.from_dynamic_string))
     |> pog.execute(tx)
     |> result.map_error(string.inspect)
 
@@ -1469,14 +1483,18 @@ fn get_migrations_for_module(module: String) -> Result(List(String), String) {
   })
 }
 
-fn version_from_filename(filename: String) {
+fn version_from_filename(filename: String) -> DateTime {
   let assert Ok(filename) = filename |> filepath.split |> list.last
-  string.replace(filename, ".sql", "")
+  let assert Ok(version_string) = filename |> string.split("_") |> list.first
+  // gtempo requires an offset to be specified, so add one manually
+  let assert Ok(version) =
+    datetime.parse(version_string <> "Z", "YYYYMMDDHHmmssZ")
+  version
 }
 
 fn get_migrations_to_apply_for_module(
   module: String,
-  current_version: Option(String),
+  current_version: Option(DateTime),
 ) -> Result(Option(String), String) {
   use files <- result.try(
     get_migrations_for_module(module)
@@ -1491,7 +1509,8 @@ fn get_migrations_to_apply_for_module(
     Some(current_version) -> {
       files
       |> list.filter(fn(file) {
-        string.compare(version_from_filename(file), current_version) == order.Gt
+        datetime.compare(version_from_filename(file), current_version)
+        == order.Gt
       })
     }
   }
@@ -1517,9 +1536,11 @@ fn get_migrations_to_apply_for_module(
   let new_version = version_from_filename(latest_migration)
 
   let new_version_sql = "insert into pevensie.module_version (module, version)
-values ('" <> module <> "', date '" <> new_version <> "')
+values ('" <> module <> "', timestamptz '" <> {
+      new_version |> datetime.to_string
+    } <> "')
 on conflict (module)
-do update set version = date '" <> new_version <> "';\n"
+do update set version = timestamptz '" <> { new_version |> datetime.to_string } <> "';\n"
 
   Ok(Some(migration_sql <> "\n" <> new_version_sql))
 }
@@ -1533,7 +1554,7 @@ fn apply_migrations_for_module(
 
   use last_char <- result.try(
     string.last(migration_sql |> string.trim_end)
-    |> result.replace_error("Empty migratino file"),
+    |> result.replace_error("Empty migration file"),
   )
 
   let sql = case last_char {
@@ -1583,7 +1604,10 @@ fn handle_module_migration(
 
   use current_version <- result.try(version_result)
   io.println_error(
-    "ok. Current version: " <> current_version |> option.unwrap("none"),
+    "ok. Current version: "
+    <> current_version
+    |> option.map(datetime.to_string)
+    |> option.unwrap("none"),
   )
 
   io.print_error("Getting migrations for module '" <> module <> "'... ")

@@ -161,7 +161,7 @@
 ////
 //// ```gleam
 //// pub type UserMetadata {
-////   UserMetadata(birthday: birl.Time)
+////   UserMetadata(birthday: tempo.DateTime)
 //// }
 //// ```
 ////
@@ -170,12 +170,12 @@
 //// ```gleam
 //// pub fn user_metadata_encoder(user_metadata: UserMetadata) -> json.Json {
 ////   json.object([
-////     #("birthday", json.string(birl.to_iso8601(user_metadata.birthday))),
+////     #("birthday", json.string(datetime.to_string(user_metadata.birthday))),
 ////   ])
 //// }
 //// ```
 ////
-//// Your decoder can then handle decoding the JSON to a `Time` type, despite the
+//// Your decoder can then handle decoding the JSON to a `DateTime` type, despite the
 //// fact that the JSON doesn't support dates.
 ////
 //// ## Session Management
@@ -218,7 +218,6 @@
 //// to sign cookies, but it's generally recommended to do so.
 
 import argus
-import birl.{type Time}
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Decoder, type Dynamic}
 import gleam/erlang/process
@@ -233,6 +232,8 @@ import pevensie/drivers.{
 }
 import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
+import tempo.{type DateTime}
+import tempo/datetime
 
 // ----- PevensieAuth ----- //
 
@@ -387,7 +388,7 @@ pub fn new_app_metadata(data: Dict(String, dynamic.Dynamic)) -> AppMetadata {
   AppMetadata(data)
 }
 
-/// Pevensie's user type. Users can be identified by ID, email, or phone number - 
+/// Pevensie's user type. Users can be identified by ID, email, or phone number -
 /// all of which are unique.
 ///
 /// Fields:
@@ -415,19 +416,19 @@ pub fn new_app_metadata(data: Dict(String, dynamic.Dynamic)) -> AppMetadata {
 pub type User(user_metadata) {
   User(
     id: String,
-    created_at: Time,
-    updated_at: Time,
-    deleted_at: Option(Time),
+    created_at: DateTime,
+    updated_at: DateTime,
+    deleted_at: Option(DateTime),
     role: Option(String),
     email: String,
     password_hash: Option(String),
-    email_confirmed_at: Option(Time),
+    email_confirmed_at: Option(DateTime),
     phone_number: Option(String),
-    phone_number_confirmed_at: Option(Time),
-    last_sign_in: Option(Time),
+    phone_number_confirmed_at: Option(DateTime),
+    last_sign_in: Option(DateTime),
     app_metadata: AppMetadata,
     user_metadata: user_metadata,
-    banned_until: Option(Time),
+    banned_until: Option(DateTime),
   )
 }
 
@@ -437,10 +438,10 @@ pub type UserCreate(user_metadata) {
     role: Option(String),
     email: String,
     password_hash: Option(String),
-    email_confirmed_at: Option(Time),
+    email_confirmed_at: Option(DateTime),
     phone_number: Option(String),
-    phone_number_confirmed_at: Option(Time),
-    last_sign_in: Option(Time),
+    phone_number_confirmed_at: Option(DateTime),
+    last_sign_in: Option(DateTime),
     app_metadata: AppMetadata,
     user_metadata: user_metadata,
   )
@@ -462,10 +463,10 @@ pub type UserUpdate(user_metadata) {
     role: UpdateField(Option(String)),
     email: UpdateField(String),
     password_hash: UpdateField(Option(String)),
-    email_confirmed_at: UpdateField(Option(Time)),
+    email_confirmed_at: UpdateField(Option(DateTime)),
     phone_number: UpdateField(Option(String)),
-    phone_number_confirmed_at: UpdateField(Option(Time)),
-    last_sign_in: UpdateField(Option(Time)),
+    phone_number_confirmed_at: UpdateField(Option(DateTime)),
+    last_sign_in: UpdateField(Option(DateTime)),
     app_metadata: UpdateField(AppMetadata),
     user_metadata: UpdateField(user_metadata),
   )
@@ -556,11 +557,14 @@ pub fn user_encoder(
 ) -> json.Json {
   json.object([
     #("id", json.string(user.id)),
-    #("created_at", json.string(birl.to_iso8601(user.created_at))),
-    #("updated_at", json.string(birl.to_iso8601(user.updated_at))),
+    #("created_at", json.string(datetime.to_string(user.created_at))),
+    #("updated_at", json.string(datetime.to_string(user.updated_at))),
     #(
       "deleted_at",
-      json.nullable(user.deleted_at |> option.map(birl.to_iso8601), json.string),
+      json.nullable(
+        user.deleted_at |> option.map(datetime.to_string),
+        json.string,
+      ),
     ),
     #("role", json.nullable(user.role, json.string)),
     #("email", json.string(user.email)),
@@ -568,7 +572,7 @@ pub fn user_encoder(
     #(
       "email_confirmed_at",
       json.nullable(
-        user.email_confirmed_at |> option.map(birl.to_iso8601),
+        user.email_confirmed_at |> option.map(datetime.to_string),
         json.string,
       ),
     ),
@@ -576,14 +580,14 @@ pub fn user_encoder(
     #(
       "phone_number_confirmed_at",
       json.nullable(
-        user.phone_number_confirmed_at |> option.map(birl.to_iso8601),
+        user.phone_number_confirmed_at |> option.map(datetime.to_string),
         json.string,
       ),
     ),
     #(
       "last_sign_in",
       json.nullable(
-        user.last_sign_in |> option.map(birl.to_iso8601),
+        user.last_sign_in |> option.map(datetime.to_string),
         json.string,
       ),
     ),
@@ -592,7 +596,7 @@ pub fn user_encoder(
     #(
       "banned_until",
       json.nullable(
-        user.banned_until |> option.map(birl.to_iso8601),
+        user.banned_until |> option.map(datetime.to_string),
         json.string,
       ),
     ),
@@ -880,7 +884,7 @@ pub fn update_last_sign_in(
     Connected,
   ),
   user_id user_id: String,
-  last_sign_in last_sign_in: Option(Time),
+  last_sign_in last_sign_in: Option(DateTime),
 ) -> Result(User(user_metadata), UpdateError(auth_driver_error)) {
   update_user(
     pevensie_auth,
@@ -907,6 +911,21 @@ pub fn update_user_metadata(
   )
 }
 
+/// Delete a user by ID.
+pub fn delete_user_by_id(
+  pevensie_auth: PevensieAuth(
+    auth_driver,
+    auth_driver_error,
+    user_metadata,
+    Connected,
+  ),
+  user_id user_id: String,
+) -> Result(User(user_metadata), DeleteError(auth_driver_error)) {
+  let PevensieAuth(driver:, user_metadata_decoder:, ..) = pevensie_auth
+
+  driver.delete_user(driver.driver, "id", user_id, user_metadata_decoder)
+}
+
 // ----- Session ----- //
 
 /// A Pevensie session. Sessions are used to identify users and
@@ -925,8 +944,8 @@ pub fn update_user_metadata(
 pub type Session {
   Session(
     id: String,
-    created_at: Time,
-    expires_at: Option(Time),
+    created_at: DateTime,
+    expires_at: Option(DateTime),
     user_id: String,
     ip: Option(IpAddress),
     user_agent: Option(String),
@@ -1027,7 +1046,9 @@ pub fn log_in_user(
   )
 
   process.start(
-    fn() { update_last_sign_in(pevensie_auth, user.id, Some(birl.utc_now())) },
+    fn() {
+      update_last_sign_in(pevensie_auth, user.id, Some(datetime.now_utc()))
+    },
     False,
   )
 
