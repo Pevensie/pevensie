@@ -19,7 +19,7 @@
 //// as a decoder and encoder for that type.
 ////
 //// ```gleam
-//// import gleam/dynamic.{type DecodeError}
+//// import gleam/dynamic/decode.{type DecodeError}
 //// import gleam/json
 ////
 //// pub type UserMetadata {
@@ -219,7 +219,7 @@
 
 import argus
 import gleam/dict.{type Dict}
-import gleam/dynamic.{type Decoder, type Dynamic}
+import gleam/dynamic/decode.{type Decoder, type Dynamic}
 import gleam/erlang/process
 import gleam/io
 import gleam/json
@@ -379,13 +379,9 @@ pub fn disconnect(
 
 /// Internal metadata used by Pevensie. Contains user information such as
 /// OAuth tokens, etc.
-pub opaque type AppMetadata {
+/// Currently unused.
+pub type AppMetadata {
   AppMetadata(Dict(String, Dynamic))
-}
-
-@internal
-pub fn new_app_metadata(data: Dict(String, dynamic.Dynamic)) -> AppMetadata {
-  AppMetadata(data)
 }
 
 /// Pevensie's user type. Users can be identified by ID, email, or phone number -
@@ -548,7 +544,11 @@ pub fn app_metadata_encoder(_app_metadata: AppMetadata) -> json.Json {
   json.object([])
 }
 
-// TODO: Add app metadata decoder
+/// A decoder for an [`AppMetadata`](#AppMetadata) JSON value.
+pub fn app_metadata_decoder() -> Decoder(AppMetadata) {
+  use data <- decode.then(decode.dict(decode.string, decode.dynamic))
+  decode.success(AppMetadata(data))
+}
 
 /// Encodes a [`User`](#User) value to JSON.
 pub fn user_encoder(
@@ -602,8 +602,6 @@ pub fn user_encoder(
     ),
   ])
 }
-
-// TODO: Add user JSON decoder
 
 // ----- User CRUD Functions ----- //
 
@@ -757,7 +755,7 @@ pub fn create_user_with_email(
       phone_number: None,
       phone_number_confirmed_at: None,
       last_sign_in: None,
-      app_metadata: new_app_metadata(dict.new()),
+      app_metadata: AppMetadata(dict.new()),
       user_metadata: user_metadata,
     ),
     user_metadata_decoder,

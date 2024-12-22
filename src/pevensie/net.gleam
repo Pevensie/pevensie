@@ -1,6 +1,7 @@
 //// `pevensie/net` contains convencience functions for working with
 //// IP addresses and other networking-related tasks.
 
+import gleam/dynamic/decode.{type Decoder}
 import gleam/erlang/atom.{type Atom}
 import gleam/erlang/charlist.{type Charlist}
 import gleam/int
@@ -50,6 +51,15 @@ fn parse_ipv6(ip: String) -> Result(IpAddress, Nil) {
 pub fn parse_ip_address(ip: String) -> Result(IpAddress, Nil) {
   parse_ipv4(ip)
   |> result.lazy_or(fn() { parse_ipv6(ip) })
+}
+
+/// A decoder to get an IP address from a string.
+pub fn ip_address_decoder() -> Decoder(IpAddress) {
+  use ip_addr_string <- decode.then(decode.string)
+  case parse_ip_address(ip_addr_string) {
+    Ok(ip) -> decode.success(ip)
+    Error(_) -> decode.failure(IpV4(0, 0, 0, 0), "IpAddress")
+  }
 }
 
 /// Formats an IP address as a string. This is useful for displaying
