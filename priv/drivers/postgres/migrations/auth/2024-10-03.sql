@@ -27,7 +27,7 @@ create table if not exists pevensie."session" (
   id uuid not null default pevensie.uuid7() primary key,
   created_at timestamptz not null default now(),
   expires_at timestamptz,
-  user_id uuid not null references pevensie."user"(id),
+  user_id uuid not null references pevensie."user"(id) on delete cascade,
   ip inet,
   user_agent text
 );
@@ -44,7 +44,7 @@ create table if not exists pevensie."one_time_token" (
   expires_at timestamptz not null,
   used_at timestamptz,
   token_type pevensie."one_time_token_type" not null,
-  user_id uuid not null references pevensie."user" (id),
+  user_id uuid not null references pevensie."user" (id) on delete cascade,
   token_hash text not null check (char_length(token_hash) > 0)
 );
 
