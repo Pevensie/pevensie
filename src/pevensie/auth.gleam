@@ -270,9 +270,8 @@ pub opaque type PevensieAuth(driver, driver_error, user_metadata, connected) {
 
 /// Creates a new [`PevensieAuth`](#PevensieAuth) instance.
 ///
-/// The `driver` argument is the driver to use for authentication. This
-/// should be the driver that you've created using the `new_auth_driver`
-/// function.
+/// The `driver` argument is the driver to use for authentication. Use either
+/// a driver provided by Pevensie, or any third-party driver you like.
 ///
 /// The `user_metadata_decoder` and `user_metadata_encoder` arguments are
 /// used to decode and encode user metadata. These should be the inverse
@@ -343,6 +342,9 @@ pub fn connect(
 
 /// Runs teardown for your chosen auth driver and returns a disconnected
 /// [`PevensieAuth`](#PevensieAuth) instance.
+///
+/// After calling this function, you can no longer use the auth driver
+/// unless you call [`connect`](#connect) again.
 pub fn disconnect(
   pevensie_auth: PevensieAuth(
     auth_driver,
