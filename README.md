@@ -107,7 +107,7 @@ gleam run   # Run the project
 gleam test  # Run the tests
 ```
 
-### V1 checklist
+### TODO
 
 > [!NOTE]
 > This section will be replaced with a proper GitHub project board shortly.
