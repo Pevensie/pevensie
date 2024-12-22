@@ -124,7 +124,7 @@
 //// Pevensie Auth is designed to be driver-agnostic, so you can use any driver
 //// you like. The drivers provided with Pevensie are:
 ////
-//// - [`postgres`](/pevensie/drivers/postgres.html) - A driver for PostgreSQL
+//// - [`postgres`](https://github.com/Pevensie/pevensie_postgres) - A driver for PostgreSQL
 ////
 //// The hope is that other first- and third-party drivers will be available
 //// in the future.

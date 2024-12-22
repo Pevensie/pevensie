@@ -51,9 +51,9 @@
 //// Pevensie Cache is designed to be driver-agnostic, so you can use any driver
 //// you like. The drivers provided with Pevensie are:
 ////
-//// - [`postgres`](/pevensie/drivers/postgres.html) - A driver for PostgreSQL
-//// - [`redis`](/pevensie/drivers/redis.html) - A driver for Redis (coming soon)
-//// - [`ets`](/pevensie/drivers/ets.html) - A driver for ETS, Erlang's in-memory key-value store (coming soon)
+//// - [`postgres`](https://github.com/Pevensie/pevensie_postgres) - A driver for PostgreSQL
+//// - `redis` - A driver for Redis (coming soon)
+//// - `ets` - A driver for ETS, Erlang's in-memory key-value store (coming soon)
 ////
 //// The hope is that other first- and third-party drivers will be available
 //// in the future.
