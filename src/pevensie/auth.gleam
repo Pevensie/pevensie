@@ -221,7 +221,6 @@ import argus
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder, type Dynamic}
 import gleam/erlang/process
-import gleam/io
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -1068,9 +1067,7 @@ pub fn create_session_cookie(
   session session: Session,
 ) -> Result(String, Nil) {
   let PevensieAuth(cookie_key:, ..) = pevensie_auth
-  io.println("Creating hash")
   use hash <- result.try(encode.sha256_hash(session.id, cookie_key))
-  io.println("Hash created")
   Ok(session.id <> "|" <> hash)
 }
 
