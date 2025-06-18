@@ -1,5 +1,5 @@
 name = "pevensie"
-version = "1.0.1"
+version = "1.1.0"
 description = "The backend application framework for Gleam!"
 licences = ["MIT"]
 repository = { type = "github", user = "Pevensie", repo = "pevensie" }
@@ -7,12 +7,12 @@ links = [{ title = "Website", href = "https://pevensie.dev" }]
 target = "erlang"
 
 [dependencies]
-gleam_stdlib = ">= 0.51.0 and < 1.0.0"
+gleam_stdlib = ">= 0.60.0 and < 1.0.0"
 gleam_erlang = ">= 0.30.0 and < 1.0.0"
 argus = ">= 1.0.2 and < 2.0.0"
-gleam_json = ">= 2.0.0 and < 3.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_crypto = ">= 1.4.0 and < 2.0.0"
-gtempo = ">= 5.1.2 and < 6.0.0"
+gtempo = ">= 7.2.2 and < 8.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

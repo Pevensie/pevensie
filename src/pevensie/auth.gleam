@@ -233,6 +233,7 @@ import pevensie/internal/encode.{type Encoder}
 import pevensie/net.{type IpAddress}
 import tempo.{type DateTime}
 import tempo/datetime
+import tempo/instant
 
 // ----- PevensieAuth ----- //
 
@@ -1044,7 +1045,11 @@ pub fn log_in_user(
 
   process.start(
     fn() {
-      update_last_sign_in(pevensie_auth, user.id, Some(datetime.now_utc()))
+      update_last_sign_in(
+        pevensie_auth,
+        user.id,
+        Some(instant.now() |> instant.as_utc_datetime),
+      )
     },
     False,
   )
