@@ -1,5 +1,5 @@
 name = "pevensie"
-version = "1.1.0"
+version = "1.2.0"
 description = "The backend application framework for Gleam!"
 licences = ["MIT"]
 repository = { type = "github", user = "Pevensie", repo = "pevensie" }
@@ -8,7 +8,7 @@ target = "erlang"
 
 [dependencies]
 gleam_stdlib = ">= 0.60.0 and < 1.0.0"
-gleam_erlang = ">= 0.30.0 and < 1.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
 argus = ">= 1.0.2 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_crypto = ">= 1.4.0 and < 2.0.0"

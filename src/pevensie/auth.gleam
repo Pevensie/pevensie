@@ -1043,16 +1043,13 @@ pub fn log_in_user(
     |> result.map_error(LogInUserError),
   )
 
-  process.start(
-    fn() {
-      update_last_sign_in(
-        pevensie_auth,
-        user.id,
-        Some(instant.now() |> instant.as_utc_datetime),
-      )
-    },
-    False,
-  )
+  process.spawn_unlinked(fn() {
+    update_last_sign_in(
+      pevensie_auth,
+      user.id,
+      Some(instant.now() |> instant.as_utc_datetime),
+    )
+  })
 
   create_session(pevensie_auth, user.id, ip, user_agent, Some(24 * 60 * 60))
   |> result.map(fn(session) { #(session, user) })

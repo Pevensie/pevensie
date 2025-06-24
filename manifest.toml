@@ -4,7 +4,7 @@
 packages = [
   { name = "argus", version = "1.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib", "jargon"], otp_app = "argus", source = "hex", outer_checksum = "E51F0D4657458F0F4AA0439EAE88B4E18E3E3E1337DF5C21155DB29BFD090509" },
   { name = "gleam_crypto", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_crypto", source = "hex", outer_checksum = "917BC8B87DBD584830E3B389CBCAB140FFE7CB27866D27C6D0FB87A9ECF35602" },
-  { name = "gleam_erlang", version = "0.34.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_erlang", source = "hex", outer_checksum = "0C38F2A128BAA0CEF17C3000BD2097EB80634E239CE31A86400C4416A5D0FDCC" },
+  { name = "gleam_erlang", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_erlang", source = "hex", outer_checksum = "7E6A5234F927C4B24F8054AB1E4572206C41F9E6D5C6C02273CB7531E7E5CED0" },
   { name = "gleam_json", version = "3.0.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_json", source = "hex", outer_checksum = "5BA154440B22D9800955B1AB854282FA37B97F30F409D76B0824D0A60C934188" },
   { name = "gleam_regexp", version = "1.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_regexp", source = "hex", outer_checksum = "9C215C6CA84A5B35BB934A9B61A9A306EC743153BE2B0425A0D032E477B062A9" },
   { name = "gleam_stdlib", version = "0.60.0", build_tools = ["gleam"], requirements = [], otp_app = "gleam_stdlib", source = "hex", outer_checksum = "621D600BB134BC239CB2537630899817B1A42E60A1D46C5E9F3FAE39F88C800B" },
@@ -17,7 +17,7 @@ packages = [
 [requirements]
 argus = { version = ">= 1.0.2 and < 2.0.0" }
 gleam_crypto = { version = ">= 1.4.0 and < 2.0.0" }
-gleam_erlang = { version = ">= 0.30.0 and < 1.0.0" }
+gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_json = { version = ">= 3.0.0 and < 4.0.0" }
 gleam_stdlib = { version = ">= 0.60.0 and < 1.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
